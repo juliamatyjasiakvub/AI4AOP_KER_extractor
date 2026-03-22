@@ -1,61 +1,60 @@
 from __future__ import annotations
 
 import io
-from pathlib import Path
+from typing import Iterable, Optional
 
 import pandas as pd
 
-from schemas import ScreenedRecord
-
-EXPORT_COLUMNS = [
-    "screening_decision",
-    "rationale",
-    "evidence_quote",
-    "triggered_inclusion_rule",
-    "triggered_exclusion_rule",
-    "PMID",
-    "DOI",
-    "first_author",
-    "year",
-    "journal",
-    "title",
-    "abstract",
-    "query_used",
-]
+from schemas import PubMedRecord, ScreeningDecision
 
 
-def screened_records_to_dataframe(records: list[ScreenedRecord]) -> pd.DataFrame:
-    rows = []
-    for record in records:
+def build_export_rows(
+    screened_pairs: Iterable[tuple[PubMedRecord, ScreeningDecision]],
+    query: str,
+    inclusion_criteria: Optional[str] = None,
+    exclusion_criteria: Optional[str] = None,
+) -> list[dict]:
+    rows: list[dict] = []
+    for record, decision in screened_pairs:
         rows.append(
             {
-                "screening_decision": record.screening_decision,
-                "rationale": record.rationale,
-                "evidence_quote": record.evidence_quote,
-                "triggered_inclusion_rule": record.triggered_inclusion_rule,
-                "triggered_exclusion_rule": record.triggered_exclusion_rule,
+                "query": query,
+                "inclusion_criteria": inclusion_criteria or "",
+                "exclusion_criteria": exclusion_criteria or "",
+                "screening_decision": decision.decision,
+                "rationale": decision.rationale,
+                "evidence_quote": decision.evidence_quote or "",
+                "triggered_inclusion_rule": decision.triggered_inclusion_rule or "",
+                "triggered_exclusion_rule": decision.triggered_exclusion_rule or "",
                 "PMID": record.pmid,
-                "DOI": record.doi,
-                "first_author": record.first_author,
-                "year": record.year,
-                "journal": record.journal,
+                "DOI": record.doi or "",
+                "first_author": record.first_author or "",
+                "year": record.year or "",
+                "journal": record.journal or "",
                 "title": record.title,
                 "abstract": record.abstract,
-                "query_used": record.query_used,
             }
         )
-    return pd.DataFrame(rows, columns=EXPORT_COLUMNS)
+    return rows
+
+
+def build_export_dataframe(
+    screened_pairs: Iterable[tuple[PubMedRecord, ScreeningDecision]],
+    query: str,
+    inclusion_criteria: Optional[str] = None,
+    exclusion_criteria: Optional[str] = None,
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        build_export_rows(
+            screened_pairs,
+            query=query,
+            inclusion_criteria=inclusion_criteria,
+            exclusion_criteria=exclusion_criteria,
+        )
+    )
 
 
 def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     buffer = io.StringIO()
     df.to_csv(buffer, index=False)
     return buffer.getvalue().encode("utf-8")
-
-
-def write_screened_csv(records: list[ScreenedRecord], output_path: str | Path) -> Path:
-    df = screened_records_to_dataframe(records)
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_path, index=False)
-    return output_path
