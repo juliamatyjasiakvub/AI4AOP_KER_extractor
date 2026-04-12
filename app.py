@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import io
 import os
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -44,13 +43,22 @@ with st.sidebar:
     st.divider()
 
     st.subheader("Stage 2 — KER extraction")
-    anthropic_key = st.text_input(
-        "Anthropic API key",
-        value=os.getenv("ANTHROPIC_API_KEY", ""),
-        type="password",
-        help="Used for full-text KER extraction. Set ANTHROPIC_API_KEY env var to avoid re-entering.",
+    extraction_model = st.text_input(
+        "Ollama model for extraction",
+        value=os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
+        help=(
+            "Model used for full-text KER extraction. "
+            "Same model as Stage 1 is fine for testing. "
+            "Larger models (llama3.1:70b, qwen2.5:14b) give better results on complex papers."
+        ),
+    )
+    ollama_url_input = st.text_input(
+        "Ollama URL",
+        value=os.getenv("OLLAMA_URL", "http://localhost:11434"),
+        help="Change this if Ollama is running on a different port or machine.",
     )
 
+    st.divider()
     if st.button("Clear all Table 1 data", type="secondary"):
         clear_all_table1()
         st.success("Table 1 cleared.")
@@ -203,12 +211,13 @@ with tab2:
                         st.error(str(e))
                         continue
 
-                # Step 2 — LLM extraction
-                with st.spinner("Sending to Claude for KER extraction..."):
+                # Step 2 — LLM extraction via Ollama
+                with st.spinner(f"Sending to Ollama ({extraction_model}) for KER extraction — this may take 1-3 minutes..."):
                     try:
                         extractions, warnings = extract_kers_from_text(
                             paper_text=paper_text,
-                            api_key=anthropic_key.strip(),
+                            model=extraction_model,
+                            ollama_url=ollama_url_input.strip(),
                         )
                     except ExtractionError as e:
                         st.error(str(e))
