@@ -1,18 +1,39 @@
 from __future__ import annotations
 
 """
-Send full paper text to a local Ollama model and parse the returned KER JSON.
+Stepwise KER extraction pipeline.
 
-Uses the same /api/generate endpoint as screening.py — no new dependencies.
+Instead of asking the LLM to produce one giant JSON object covering every field
+of every KER in a single call, we break the work into small focused steps:
+
+    Step 1 — list_ker_pairs        : identify upstream/downstream pairs
+    Step 2 — classify_ker          : levels, adjacency, name, description
+    Step 3 — assess_evidence       : paper_type, plausibility, contradicts, ...
+    Step 4 — applicability         : taxa, sex, life stage
+    Step 5 — quantitative          : modulating factors, time scale, ...
+    Step 6 — study_meta            : study_design, exposure_route, confidence, ...
+
+Each step is a separate Ollama call with its own prompt. A StepResult is
+captured for every call (prompt, raw response, parsed value, error) so the
+caller can show exactly what happened at each step — making debugging much
+easier than the previous one-shot prompt.
+
+Public entry point:
+
+    extract_kers_from_text(paper_text, model, ollama_url=None, on_step=None)
+        returns (extractions, warnings)
+
+Pass `on_step=lambda s: ...` to receive each StepResult as it completes (e.g.
+for live streaming into the Streamlit UI).
 """
 
 import json
 import os
-from typing import Optional
-
-import requests
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Optional
 
 from schemas import KERExtraction
+from stage2_extraction.llm_providers import LLMConfig, LLMProviderError
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
@@ -27,182 +48,236 @@ STUDY_DESIGNS     = {"In vivo", "In vitro", "In silico", "Ex vivo", "Epidemiolog
 SEX_VALUES        = {"Male", "Female", "Mixed", "Not specified"}
 CONFIDENCE_VALUES = {"High", "Medium", "Low"}
 
-# ---------------------------------------------------------------------------
-# Prompt
-# ---------------------------------------------------------------------------
-
-_SYSTEM = (
-    "You are a specialist in adverse outcome pathway (AOP) toxicology and the AOP-Wiki "
-    "data model. Your job is to extract Key Event Relationships (KERs) from scientific papers.\n\n"
-    "A KER is any causal/mechanistic link the paper describes between an upstream "
-    "biological event (e.g. receptor activation, oxidative stress, DNA damage) and a "
-    "downstream event (e.g. apoptosis, inflammation, organ dysfunction, disease).\n"
-    "Most toxicology / mechanism papers contain AT LEAST ONE KER. Returning an empty "
-    "list is only correct if the paper has no mechanistic content at all (e.g. pure "
-    "exposure-assessment or analytical-method papers).\n\n"
-    "OUTPUT RULES:\n"
-    "1. Return ONLY valid JSON. No explanation, no markdown fences, no extra text.\n"
-    "2. Top-level key must be 'kers' whose value is an array of KER objects.\n"
-    "3. Use JSON null for unknown optional fields. Use 'Not specified' for unknown "
-    "applicability fields. Required fields (see spec) must always be filled with the "
-    "best supported value from the paper.\n"
-    "4. Use EXACT enum strings listed below.\n"
-    "5. Prefer extracting partial KERs (with nulls for unknown fields) over returning "
-    "an empty list. Do not invent specific numbers, DOIs, or species not in the paper.\n"
-)
-
-_FIELD_SPEC = (
-    "Each KER object can have these fields:\n"
-    "upstream_ke_name            : string\n"
-    "upstream_ke_level           : MIE|Molecular|Cellular|Tissue|Organ|Individual|Population\n"
-    "downstream_ke_name          : string\n"
-    "downstream_ke_level         : same enum\n"
-    "ker_name                    : string ('<upstream> leads to <downstream>')\n"
-    "ker_description             : string (1-3 sentences mechanistic basis)\n"
-    "ker_adjacency               : Adjacent|Non-adjacent\n"
-    "paper_type                  : 'Primary study'|'Review / meta-analysis'|'In silico'\n"
-    "cited_evidence_dois         : semicolon-separated DOIs or null\n"
-    "biological_plausibility     : string or null\n"
-    "empirical_evidence_summary  : string or null\n"
-    "essentiality_evidence       : string or null\n"
-    "contradicts_ker             : true or false (NEVER null)\n"
-    "taxonomic_applicability     : NCBI species name(s) or 'Not specified'\n"
-    "sex_applicability           : Male|Female|Mixed|'Not specified'\n"
-    "life_stage_applicability    : string\n"
-    "modulating_factors          : string or null\n"
-    "quantitative_relationships  : string or null\n"
-    "response_response_relationship : string or null\n"
-    "time_scale                  : string or null\n"
-    "feedforward_feedback_loops  : string or null\n"
-    "study_design                : 'In vivo'|'In vitro'|'In silico'|'Ex vivo'|Epidemiological|'Review / meta-analysis'\n"
-    "exposure_route              : string or null\n"
-    "chemical_stressor           : string or null\n"
-    "extraction_confidence       : High|Medium|Low\n"
-)
-
-
-_EXAMPLE = (
-    'EXAMPLE OUTPUT FORMAT (illustrative only — do not copy its content):\n'
-    '{"kers": [{'
-    '"upstream_ke_name": "Activation of AhR", '
-    '"upstream_ke_level": "Molecular", '
-    '"downstream_ke_name": "Induction of CYP1A1", '
-    '"downstream_ke_level": "Cellular", '
-    '"ker_name": "Activation of AhR leads to Induction of CYP1A1", '
-    '"ker_description": "Ligand binding to AhR drives nuclear translocation and '
-    'transcription of CYP1A1.", '
-    '"ker_adjacency": "Adjacent", '
-    '"paper_type": "Primary study", '
-    '"cited_evidence_dois": null, '
-    '"biological_plausibility": "Well-established receptor-mediated transcription.", '
-    '"empirical_evidence_summary": "qPCR showed >10x CYP1A1 induction after TCDD.", '
-    '"essentiality_evidence": null, '
-    '"contradicts_ker": false, '
-    '"taxonomic_applicability": "Mus musculus", '
-    '"sex_applicability": "Male", '
-    '"life_stage_applicability": "Adult", '
-    '"modulating_factors": null, '
-    '"quantitative_relationships": null, '
-    '"response_response_relationship": null, '
-    '"time_scale": "Hours", '
-    '"feedforward_feedback_loops": null, '
-    '"study_design": "In vivo", '
-    '"exposure_route": "Oral gavage", '
-    '"chemical_stressor": "TCDD", '
-    '"extraction_confidence": "High"'
-    '}]}\n'
-)
-
-
-def _build_prompt(paper_text: str) -> str:
-    return (
-        f"{_SYSTEM}\n{_FIELD_SPEC}\n{_EXAMPLE}\n"
-        f"Now extract every KER described or supported by the following paper. "
-        f"Aim for at least one KER if any mechanistic link is mentioned. "
-        f'Return ONLY a JSON object with key "kers".\n\n'
-        f"PAPER:\n{paper_text}\n\nJSON:"
-    )
-
 
 # ---------------------------------------------------------------------------
-# Ollama call
+# Errors + step result
 # ---------------------------------------------------------------------------
 
 class ExtractionError(RuntimeError):
-    pass
+    """Raised when the pipeline cannot continue (e.g. Ollama unreachable)."""
 
 
-def _call_ollama(prompt: str, model: str) -> str:
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "format": "json",
-        "options": {
-            "temperature": 0.1,
-            # Total context window (prompt + response). 32k fits ~60k chars of
-            # paper text plus several KER objects. Falls back gracefully on
-            # models with smaller native context.
-            "num_ctx": 65536,
-            # Hard cap on generated tokens. The default (~128) is far too small
-            # to emit even one fully-populated KER object, which is the most
-            # common cause of an empty 'kers' list.
-            "num_predict": 4096,
-        },
-    }
+class ExtractionValidationError(ValueError):
+    """Raised when a single KER fails schema validation — others can still proceed."""
+
+
+@dataclass
+class StepResult:
+    """Outcome of one LLM call in the stepwise pipeline."""
+    step: str                       # short id e.g. 'list_ker_pairs', 'classify_ker[1]'
+    ok: bool                        # whether parsing succeeded
+    prompt: str                     # the exact prompt sent to Ollama
+    raw_response: str               # the exact raw text from Ollama
+    parsed: Optional[Any] = None    # parsed dict/list, or None if parsing failed
+    error: Optional[str] = None     # error message if ok=False
+    ker_index: Optional[int] = None # which KER this step applies to (None for step 1)
+
+
+StepCallback = Callable[[StepResult], None]
+
+
+# ---------------------------------------------------------------------------
+# Low-level provider call + JSON parsing
+# ---------------------------------------------------------------------------
+
+def _call_llm(
+    cfg: LLMConfig,
+    prompt: str,
+    num_predict: int,
+    cached_prefix: Optional[str] = None,
+) -> str:
+    """Invoke the configured provider with a per-call output-token budget.
+
+    `cached_prefix` is forwarded to the provider so that on Anthropic /
+    OpenAI / Ollama the persona + paper text are billed (or KV-cached) once
+    instead of on every step.
+    """
+    call_cfg = replace(cfg, max_output_tokens=num_predict)
     try:
-        r = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json=payload,
-            timeout=1200,
-        )
-        r.raise_for_status()
-    except requests.RequestException as exc:
-        raise ExtractionError(
-            f"Could not reach Ollama at {OLLAMA_URL}. "
-            f"Make sure Ollama is running (`ollama serve`).\nDetail: {exc}"
-        ) from exc
-    return r.json().get("response", "")
+        return call_cfg.generate(prompt, cached_prefix=cached_prefix)
+    except LLMProviderError as exc:
+        raise ExtractionError(str(exc)) from exc
 
 
-# ---------------------------------------------------------------------------
-# JSON parsing
-# ---------------------------------------------------------------------------
-
-def _parse_response(raw: str) -> list[dict]:
+def _extract_json(raw: str) -> Any:
+    """Best-effort JSON extraction from a possibly-noisy model response."""
     text = raw.strip()
     if text.startswith("```"):
         text = text.strip("`")
         if text.lower().startswith("json"):
             text = text[4:].strip()
-    start = text.find("{")
-    end   = text.rfind("}")
-    if start == -1 or end == -1:
-        raise ExtractionError(
-            f"No JSON object in model response. First 300 chars:\n{raw[:300]}"
-        )
-    text = text[start : end + 1]
+    obj_start, obj_end = text.find("{"), text.rfind("}")
+    arr_start, arr_end = text.find("["), text.rfind("]")
+    candidates: list[str] = []
+    if obj_start != -1 and obj_end != -1 and obj_end > obj_start:
+        candidates.append(text[obj_start : obj_end + 1])
+    if arr_start != -1 and arr_end != -1 and arr_end > arr_start:
+        candidates.append(text[arr_start : arr_end + 1])
+    if not candidates:
+        raise ValueError(f"No JSON found in response. First 300 chars:\n{raw[:300]}")
+    last_err: Optional[Exception] = None
+    for cand in candidates:
+        try:
+            return json.loads(cand)
+        except json.JSONDecodeError as exc:
+            last_err = exc
+    raise ValueError(f"Invalid JSON: {last_err}\nRaw (500 chars):\n{raw[:500]}")
+
+
+def _run_step(
+    step_id: str,
+    prompt: str,
+    cfg: LLMConfig,
+    on_step: Optional[StepCallback],
+    ker_index: Optional[int] = None,
+    num_predict: int = 1024,
+    cached_prefix: Optional[str] = None,
+) -> StepResult:
+    """Run one LLM call and capture everything as a StepResult."""
+    raw = _call_llm(cfg, prompt, num_predict=num_predict, cached_prefix=cached_prefix)
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ExtractionError(
-            f"Invalid JSON from model: {exc}\nRaw (500 chars):\n{raw[:500]}"
-        ) from exc
-    kers = payload.get("kers", [])
-    if not isinstance(kers, list):
-        raise ExtractionError(f"'kers' should be a list, got {type(kers)}")
-    return kers
+        parsed = _extract_json(raw)
+        result = StepResult(
+            step=step_id, ok=True, prompt=prompt, raw_response=raw,
+            parsed=parsed, ker_index=ker_index,
+        )
+    except Exception as exc:
+        result = StepResult(
+            step=step_id, ok=False, prompt=prompt, raw_response=raw,
+            parsed=None, error=str(exc), ker_index=ker_index,
+        )
+    if on_step is not None:
+        try:
+            on_step(result)
+        except Exception:
+            # Never let a UI callback break the pipeline.
+            pass
+    return result
 
 
 # ---------------------------------------------------------------------------
-# Validation
+# Step prompts
+#
+# Every call shares the same long prefix (persona + paper text). We send that
+# prefix once via the provider's prompt-cache mechanism, and only the small
+# variable "task" string in the user message. That cuts input tokens for the
+# 30-ish per-paper calls from O(N × paper_size) to O(paper_size + N × task).
 # ---------------------------------------------------------------------------
 
-class ExtractionValidationError(ValueError):
-    pass
+_PERSONA = (
+    "You are a specialist in adverse outcome pathway (AOP) toxicology and the "
+    "AOP-Wiki data model. A Key Event Relationship (KER) is any causal or "
+    "mechanistic link the paper describes between an upstream biological event "
+    "(e.g. receptor activation, oxidative stress, DNA damage) and a downstream "
+    "event (e.g. apoptosis, inflammation, organ dysfunction, disease).\n"
+)
 
 
-def _coerce_enum(value, allowed: set, field: str, fallback: Optional[str] = None) -> Optional[str]:
+def _build_cached_prefix(paper_text: str) -> str:
+    """Return the static text shared by every step call for one paper."""
+    return f"{_PERSONA}\nPAPER:\n{paper_text}"
+
+
+def _task_list_pairs() -> str:
+    return (
+        "TASK: List every KER described or supported by the paper provided in "
+        "the system context.\n"
+        "Return ONLY JSON of the form:\n"
+        '  {"pairs": [{"upstream": "<upstream KE name>", "downstream": "<downstream KE name>"}, ...]}\n'
+        "Rules:\n"
+        "- Aim for at least one pair if any mechanistic link is mentioned.\n"
+        "- Use short specific KE names taken from or paraphrased from the paper.\n"
+        "- Return {\"pairs\": []} ONLY if the paper has no mechanistic content "
+        "(e.g. a pure exposure-assessment or analytical-method paper).\n"
+        "JSON:"
+    )
+
+
+def _task_classify(upstream: str, downstream: str) -> str:
+    return (
+        f"For the KER below, classify the events using the paper in the system context.\n"
+        f"  Upstream KE:   {upstream}\n"
+        f"  Downstream KE: {downstream}\n\n"
+        "Return ONLY JSON with these keys (no extra text):\n"
+        '  {\n'
+        '    "upstream_ke_level":   "MIE|Molecular|Cellular|Tissue|Organ|Individual|Population",\n'
+        '    "downstream_ke_level": "same enum",\n'
+        '    "ker_adjacency":       "Adjacent|Non-adjacent",\n'
+        '    "ker_name":            "<upstream> leads to <downstream>",\n'
+        '    "ker_description":     "1-3 sentences on the mechanistic basis, grounded in the paper"\n'
+        '  }\n'
+        "JSON:"
+    )
+
+
+def _task_evidence(upstream: str, downstream: str) -> str:
+    return (
+        f"For this KER (Upstream: {upstream}; Downstream: {downstream}) "
+        f"summarise the evidence in the paper provided in the system context.\n\n"
+        "Return ONLY JSON with these keys:\n"
+        '  {\n'
+        '    "paper_type":                 "Primary study|Review / meta-analysis|In silico",\n'
+        '    "cited_evidence_dois":        "semicolon-separated DOIs from references, or null",\n'
+        '    "biological_plausibility":    "short string or null",\n'
+        '    "empirical_evidence_summary": "key data points / measurements supporting the link, or null",\n'
+        '    "essentiality_evidence":      "knockout / antagonist / blocker evidence, or null",\n'
+        '    "contradicts_ker":            true_or_false  // true if the paper argues AGAINST the KER\n'
+        '  }\n'
+        "JSON:"
+    )
+
+
+def _task_applicability(upstream: str, downstream: str) -> str:
+    return (
+        f"For this KER (Upstream: {upstream}; Downstream: {downstream}) "
+        f"describe applicability based on what the paper in the system context studied.\n\n"
+        "Return ONLY JSON with these keys:\n"
+        '  {\n'
+        '    "taxonomic_applicability":   "NCBI species name(s) e.g. \\"Mus musculus\\"; or \\"Not specified\\"",\n'
+        '    "sex_applicability":         "Male|Female|Mixed|Not specified",\n'
+        '    "life_stage_applicability":  "e.g. Adult, Embryo, Juvenile, or Not specified"\n'
+        '  }\n'
+        "JSON:"
+    )
+
+
+def _task_quantitative(upstream: str, downstream: str) -> str:
+    return (
+        f"For this KER (Upstream: {upstream}; Downstream: {downstream}) "
+        f"extract any quantitative or temporal information from the paper in the system context.\n\n"
+        "Return ONLY JSON with these keys (use null if the paper does not say):\n"
+        '  {\n'
+        '    "modulating_factors":             "string or null",\n'
+        '    "quantitative_relationships":     "string or null",\n'
+        '    "response_response_relationship": "string or null",\n'
+        '    "time_scale":                     "string or null",\n'
+        '    "feedforward_feedback_loops":     "string or null"\n'
+        '  }\n'
+        "JSON:"
+    )
+
+
+def _task_study_meta(upstream: str, downstream: str) -> str:
+    return (
+        f"For this KER (Upstream: {upstream}; Downstream: {downstream}) "
+        f"describe the study design and your confidence in the extraction, "
+        f"using the paper in the system context.\n\n"
+        "Return ONLY JSON with these keys:\n"
+        '  {\n'
+        '    "study_design":          "In vivo|In vitro|In silico|Ex vivo|Epidemiological|Review / meta-analysis",\n'
+        '    "exposure_route":        "e.g. Oral gavage, IP, Inhalation; or null",\n'
+        '    "chemical_stressor":     "chemical(s) tested, or null",\n'
+        '    "extraction_confidence": "High|Medium|Low"\n'
+        '  }\n'
+        "JSON:"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Validation helpers
+# ---------------------------------------------------------------------------
+
+def _coerce_enum(value, allowed: set, fallback: Optional[str] = None) -> Optional[str]:
     if value is None:
         return fallback
     s = str(value).strip()
@@ -214,97 +289,230 @@ def _coerce_enum(value, allowed: set, field: str, fallback: Optional[str] = None
     return fallback
 
 
-def _validate_and_coerce(raw: dict) -> KERExtraction:
-    def req_str(key: str) -> str:
-        v = raw.get(key)
-        if not v or not str(v).strip():
-            raise ExtractionValidationError(f"Required field '{key}' missing or empty.")
-        return str(v).strip()
+def _opt_str(v) -> Optional[str]:
+    if v is None or str(v).strip().lower() in ("null", "none", ""):
+        return None
+    return str(v).strip()
 
-    def opt_str(key: str) -> Optional[str]:
-        v = raw.get(key)
-        if v is None or str(v).strip().lower() in ("null", "none", ""):
-            return None
-        return str(v).strip()
 
-    def req_bool(key: str) -> bool:
-        v = raw.get(key)
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, str) and v.strip().lower() in ("true", "1", "yes"):
-            return True
-        return False
+def _req_str(v, field_name: str) -> str:
+    if not v or not str(v).strip():
+        raise ExtractionValidationError(f"Required field '{field_name}' missing or empty.")
+    return str(v).strip()
 
+
+def _req_bool(v) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str) and v.strip().lower() in ("true", "1", "yes"):
+        return True
+    return False
+
+
+def _assemble(
+    upstream: str,
+    downstream: str,
+    classify: dict,
+    evidence: dict,
+    applicability: dict,
+    quantitative: dict,
+    study_meta: dict,
+) -> KERExtraction:
     return KERExtraction(
-        upstream_ke_name               = req_str("upstream_ke_name"),
-        upstream_ke_level              = _coerce_enum(raw.get("upstream_ke_level"), KE_LEVELS, "upstream_ke_level", "Molecular"),
-        downstream_ke_name             = req_str("downstream_ke_name"),
-        downstream_ke_level            = _coerce_enum(raw.get("downstream_ke_level"), KE_LEVELS, "downstream_ke_level", "Molecular"),
-        ker_name                       = req_str("ker_name"),
-        ker_description                = req_str("ker_description"),
-        ker_adjacency                  = _coerce_enum(raw.get("ker_adjacency"), KER_ADJACENCY, "ker_adjacency", "Adjacent"),
-        paper_type                     = _coerce_enum(raw.get("paper_type"), PAPER_TYPES, "paper_type", "Primary study"),
-        cited_evidence_dois            = opt_str("cited_evidence_dois"),
-        biological_plausibility        = opt_str("biological_plausibility"),
-        empirical_evidence_summary     = opt_str("empirical_evidence_summary"),
-        essentiality_evidence          = opt_str("essentiality_evidence"),
-        contradicts_ker                = req_bool("contradicts_ker"),
-        taxonomic_applicability        = raw.get("taxonomic_applicability") or "Not specified",
-        sex_applicability              = _coerce_enum(raw.get("sex_applicability"), SEX_VALUES, "sex_applicability", "Not specified"),
-        life_stage_applicability       = raw.get("life_stage_applicability") or "Not specified",
-        modulating_factors             = opt_str("modulating_factors"),
-        quantitative_relationships     = opt_str("quantitative_relationships"),
-        response_response_relationship = opt_str("response_response_relationship"),
-        time_scale                     = opt_str("time_scale"),
-        feedforward_feedback_loops     = opt_str("feedforward_feedback_loops"),
-        study_design                   = _coerce_enum(raw.get("study_design"), STUDY_DESIGNS, "study_design", "In vivo"),
-        exposure_route                 = opt_str("exposure_route"),
-        chemical_stressor              = opt_str("chemical_stressor"),
-        extraction_confidence          = _coerce_enum(raw.get("extraction_confidence"), CONFIDENCE_VALUES, "extraction_confidence", "Low"),
+        upstream_ke_name               = _req_str(upstream, "upstream_ke_name"),
+        upstream_ke_level              = _coerce_enum(classify.get("upstream_ke_level"), KE_LEVELS, "Molecular"),
+        downstream_ke_name             = _req_str(downstream, "downstream_ke_name"),
+        downstream_ke_level            = _coerce_enum(classify.get("downstream_ke_level"), KE_LEVELS, "Molecular"),
+        ker_name                       = _req_str(classify.get("ker_name") or f"{upstream} leads to {downstream}", "ker_name"),
+        ker_description                = _req_str(classify.get("ker_description"), "ker_description"),
+        ker_adjacency                  = _coerce_enum(classify.get("ker_adjacency"), KER_ADJACENCY, "Adjacent"),
+        paper_type                     = _coerce_enum(evidence.get("paper_type"), PAPER_TYPES, "Primary study"),
+        cited_evidence_dois            = _opt_str(evidence.get("cited_evidence_dois")),
+        biological_plausibility        = _opt_str(evidence.get("biological_plausibility")),
+        empirical_evidence_summary     = _opt_str(evidence.get("empirical_evidence_summary")),
+        essentiality_evidence          = _opt_str(evidence.get("essentiality_evidence")),
+        contradicts_ker                = _req_bool(evidence.get("contradicts_ker")),
+        taxonomic_applicability        = applicability.get("taxonomic_applicability") or "Not specified",
+        sex_applicability              = _coerce_enum(applicability.get("sex_applicability"), SEX_VALUES, "Not specified"),
+        life_stage_applicability       = applicability.get("life_stage_applicability") or "Not specified",
+        modulating_factors             = _opt_str(quantitative.get("modulating_factors")),
+        quantitative_relationships     = _opt_str(quantitative.get("quantitative_relationships")),
+        response_response_relationship = _opt_str(quantitative.get("response_response_relationship")),
+        time_scale                     = _opt_str(quantitative.get("time_scale")),
+        feedforward_feedback_loops     = _opt_str(quantitative.get("feedforward_feedback_loops")),
+        study_design                   = _coerce_enum(study_meta.get("study_design"), STUDY_DESIGNS, "In vivo"),
+        exposure_route                 = _opt_str(study_meta.get("exposure_route")),
+        chemical_stressor              = _opt_str(study_meta.get("chemical_stressor")),
+        extraction_confidence          = _coerce_enum(study_meta.get("extraction_confidence"), CONFIDENCE_VALUES, "Low"),
     )
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Public step functions — each one runs ONE LLM call against `cfg`
+# ---------------------------------------------------------------------------
+
+def list_ker_pairs(
+    paper_text: str,
+    cfg: LLMConfig,
+    on_step: Optional[StepCallback] = None,
+) -> StepResult:
+    """Step 1 — return a StepResult whose `parsed` is `{'pairs': [...]}`."""
+    return _run_step(
+        "list_ker_pairs",
+        _task_list_pairs(),
+        cfg=cfg, on_step=on_step, num_predict=1024,
+        cached_prefix=_build_cached_prefix(paper_text),
+    )
+
+
+def classify_ker(paper_text, upstream, downstream, cfg, idx, on_step=None) -> StepResult:
+    return _run_step(
+        f"classify_ker[{idx}]",
+        _task_classify(upstream, downstream),
+        cfg=cfg, on_step=on_step, ker_index=idx, num_predict=512,
+        cached_prefix=_build_cached_prefix(paper_text),
+    )
+
+
+def assess_evidence(paper_text, upstream, downstream, cfg, idx, on_step=None) -> StepResult:
+    return _run_step(
+        f"assess_evidence[{idx}]",
+        _task_evidence(upstream, downstream),
+        cfg=cfg, on_step=on_step, ker_index=idx, num_predict=768,
+        cached_prefix=_build_cached_prefix(paper_text),
+    )
+
+
+def extract_applicability(paper_text, upstream, downstream, cfg, idx, on_step=None) -> StepResult:
+    return _run_step(
+        f"applicability[{idx}]",
+        _task_applicability(upstream, downstream),
+        cfg=cfg, on_step=on_step, ker_index=idx, num_predict=256,
+        cached_prefix=_build_cached_prefix(paper_text),
+    )
+
+
+def extract_quantitative(paper_text, upstream, downstream, cfg, idx, on_step=None) -> StepResult:
+    return _run_step(
+        f"quantitative[{idx}]",
+        _task_quantitative(upstream, downstream),
+        cfg=cfg, on_step=on_step, ker_index=idx, num_predict=512,
+        cached_prefix=_build_cached_prefix(paper_text),
+    )
+
+
+def extract_study_meta(paper_text, upstream, downstream, cfg, idx, on_step=None) -> StepResult:
+    return _run_step(
+        f"study_meta[{idx}]",
+        _task_study_meta(upstream, downstream),
+        cfg=cfg, on_step=on_step, ker_index=idx, num_predict=256,
+        cached_prefix=_build_cached_prefix(paper_text),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
 # ---------------------------------------------------------------------------
 
 def extract_kers_from_text(
     paper_text: str,
+    cfg: Optional[LLMConfig] = None,
+    *,
     model: str = "llama3.1:8b",
     ollama_url: Optional[str] = None,
+    on_step: Optional[StepCallback] = None,
+    max_kers: int = 20,
 ) -> tuple[list[KERExtraction], list[str]]:
     """
-    Extract KERs from paper text using a local Ollama model.
+    Run the stepwise extraction pipeline and return (extractions, warnings).
 
-    Returns (extractions, warnings) where warnings are skipped-KER messages.
+    Pass an `LLMConfig` to use any provider (Ollama, Anthropic, OpenAI).
+    The legacy `model` / `ollama_url` keyword arguments still work and build
+    an Ollama config automatically.
+
+    `on_step` is an optional callback invoked once for every LLM call with a
+    fully populated StepResult, allowing the UI to display each step's prompt
+    + raw response live.
     """
-    if ollama_url:
-        global OLLAMA_URL
-        OLLAMA_URL = ollama_url
+    if cfg is None:
+        cfg = LLMConfig(
+            provider="ollama",
+            model=model,
+            base_url=ollama_url or OLLAMA_URL,
+        )
 
-    raw_text = _call_ollama(_build_prompt(paper_text), model)
-    raw_kers = _parse_response(raw_text)
-
+    warnings: list[str] = []
     extractions: list[KERExtraction] = []
-    warnings:    list[str]           = []
 
-    for i, raw_ker in enumerate(raw_kers):
+    # Step 1 — list KER pairs
+    step1 = list_ker_pairs(paper_text, cfg=cfg, on_step=on_step)
+
+    if not step1.ok:
+        warnings.append(
+            "Step 1 (list_ker_pairs) failed to return valid JSON.\n"
+            f"Error: {step1.error}\n"
+            f"Raw (500 chars): {step1.raw_response[:500]}"
+        )
+        return extractions, warnings
+
+    pairs_payload = step1.parsed or {}
+    pairs = pairs_payload.get("pairs") if isinstance(pairs_payload, dict) else None
+    if not isinstance(pairs, list) or not pairs:
+        warnings.append(
+            "Step 1 returned no KER pairs. Possible causes:\n"
+            "• Paper truly lacks mechanistic content.\n"
+            "• Model is too small — try llama3.1:70b or qwen2.5:14b.\n"
+            f"Step 1 raw (500 chars): {step1.raw_response[:500]}"
+        )
+        return extractions, warnings
+
+    pairs = pairs[:max_kers]
+
+    # Steps 2-6 — per KER
+    for i, pair in enumerate(pairs, start=1):
+        if not isinstance(pair, dict):
+            warnings.append(f"KER {i}: pair is not a JSON object — skipped.")
+            continue
+        upstream   = (pair.get("upstream") or "").strip()
+        downstream = (pair.get("downstream") or "").strip()
+        if not upstream or not downstream:
+            warnings.append(f"KER {i}: missing upstream/downstream name — skipped.")
+            continue
+
+        per_ker_steps = [
+            ("classify",      classify_ker),
+            ("evidence",      assess_evidence),
+            ("applicability", extract_applicability),
+            ("quantitative",  extract_quantitative),
+            ("study_meta",    extract_study_meta),
+        ]
+        results: dict[str, dict] = {}
+
+        for label, fn in per_ker_steps:
+            step = fn(paper_text, upstream, downstream, cfg, i, on_step)
+            if not step.ok or not isinstance(step.parsed, dict):
+                warnings.append(
+                    f"KER {i} ({upstream} → {downstream}): step '{label}' failed.\n"
+                    f"Error: {step.error}\nRaw (300 chars): {step.raw_response[:300]}"
+                )
+                results[label] = {}
+            else:
+                results[label] = step.parsed
+
         try:
-            extractions.append(_validate_and_coerce(raw_ker))
+            extractions.append(_assemble(
+                upstream      = upstream,
+                downstream    = downstream,
+                classify      = results["classify"],
+                evidence      = results["evidence"],
+                applicability = results["applicability"],
+                quantitative  = results["quantitative"],
+                study_meta    = results["study_meta"],
+            ))
         except ExtractionValidationError as exc:
-            warnings.append(f"KER {i+1} skipped — {exc}")
+            warnings.append(f"KER {i} ({upstream} → {downstream}): assembly failed — {exc}")
 
     if not extractions and not warnings:
-        # Surface the actual model output so the user can see WHY it was empty
-        # (e.g. the model wrote a refusal, a different JSON shape, or really
-        # judged the paper to have no mechanistic content).
-        snippet = raw_text.strip()[:500] or "<empty response>"
-        warnings.append(
-            "Model returned an empty KER list. Possible causes:\n"
-            "• Paper lacks mechanistic content (analytical-method or exposure-only paper).\n"
-            "• Model is too small — try a larger one (e.g. llama3.1:70b, qwen2.5:14b).\n"
-            "• Output was truncated — try a model with a larger context window.\n"
-            f"Raw model output (first 500 chars):\n{snippet}"
-        )
+        warnings.append("No KERs assembled. See step results for details.")
 
     return extractions, warnings

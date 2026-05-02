@@ -10,9 +10,11 @@ from schemas import PubMedRecord, ScreeningDecision
 from stage1_search.pubmed_search import search_pubmed
 from stage1_search.screening import screen_record
 from stage1_search.export import build_export_dataframe, dataframe_to_csv_bytes
-from stage2_extraction.pdf_reader import extract_text_from_pdf, truncate_to_token_budget
+from stage2_extraction.pdf_reader import extract_text_from_pdf, truncate_to_token_budget, extract_doi_from_pdf
 from stage2_extraction.ker_extractor import extract_kers_from_text, ExtractionError
+from stage2_extraction.llm_providers import LLMConfig
 from stage2_extraction.aopwiki_client import enrich_ker
+from stage2_extraction import aopwiki_xml
 from stage2_extraction.table1_store import init_db, insert_table1_row, load_table1_as_dataframe, clear_all_table1
 from stage2_extraction.table2_synthesis import compute_table2
 
@@ -43,20 +45,98 @@ with st.sidebar:
     st.divider()
 
     st.subheader("Stage 2 — KER extraction")
-    extraction_model = st.text_input(
-        "Ollama model for extraction",
-        value=os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
+    PROVIDER_DEFAULTS = {
+        "Ollama (local)": {
+            "provider": "ollama",
+            "default_model": "llama3.1:8b",
+            "default_url": os.getenv("OLLAMA_URL", "http://localhost:11434"),
+            "needs_key": False,
+            "model_help": "Local Ollama model tag, e.g. llama3.1:8b, qwen2.5:14b.",
+        },
+        "Anthropic Claude": {
+            "provider": "anthropic",
+            "default_model": "claude-sonnet-4-5",
+            "default_url": "https://api.anthropic.com/v1/messages",
+            "needs_key": True,
+            "env_key": "ANTHROPIC_API_KEY",
+            "model_help": "e.g. claude-sonnet-4-5, claude-opus-4-5, claude-haiku-4-5.",
+        },
+        "OpenAI GPT": {
+            "provider": "openai",
+            "default_model": "gpt-4o",
+            "default_url": "https://api.openai.com/v1/chat/completions",
+            "needs_key": True,
+            "env_key": "OPENAI_API_KEY",
+            "model_help": "e.g. gpt-4o, gpt-4o-mini, gpt-4.1.",
+        },
+    }
+    provider_label = st.selectbox(
+        "LLM provider",
+        list(PROVIDER_DEFAULTS.keys()),
+        index=0,
         help=(
-            "Model used for full-text KER extraction. "
-            "Same model as Stage 1 is fine for testing. "
-            "Larger models (llama3.1:70b, qwen2.5:14b) give better results on complex papers."
+            "Local Ollama is free but limited by your hardware. Cloud providers "
+            "(Claude, GPT) accept much larger inputs and usually give better "
+            "extraction quality."
         ),
     )
-    ollama_url_input = st.text_input(
-        "Ollama URL",
-        value=os.getenv("OLLAMA_URL", "http://localhost:11434"),
-        help="Change this if Ollama is running on a different port or machine.",
+    provider_cfg = PROVIDER_DEFAULTS[provider_label]
+
+    extraction_model = st.text_input(
+        "Model name",
+        value=provider_cfg["default_model"],
+        key=f"model_{provider_cfg['provider']}",
+        help=provider_cfg["model_help"],
     )
+
+    api_base_url = st.text_input(
+        "API base URL",
+        value=provider_cfg["default_url"],
+        key=f"url_{provider_cfg['provider']}",
+        help="Override only if you proxy the API or run a private endpoint.",
+    )
+
+    api_key_value = ""
+    if provider_cfg["needs_key"]:
+        env_key = provider_cfg.get("env_key", "")
+        api_key_value = st.text_input(
+            "API key",
+            value=os.getenv(env_key, ""),
+            type="password",
+            key=f"key_{provider_cfg['provider']}",
+            help=f"Used only for this session. Falls back to ${env_key} if blank.",
+        )
+
+    st.divider()
+
+    st.subheader("AOP-Wiki dump")
+    local_v = aopwiki_xml.get_local_version()
+    if local_v:
+        st.caption(f"Local dump: **{local_v}**")
+    else:
+        st.warning("No local AOP-Wiki dump found in `stage2_extraction/aopwiki_data/`.")
+
+    if st.button("Check for updates", key="aop_check_updates"):
+        with st.spinner("Querying aopwiki.org/downloads..."):
+            remote_v = aopwiki_xml.get_latest_remote_version()
+        if remote_v is None:
+            st.error("Could not reach aopwiki.org.")
+        elif local_v == remote_v:
+            st.success(f"Up to date ({local_v}).")
+        else:
+            st.session_state["aop_remote_v"] = remote_v
+            st.info(f"Newer dump available: **{remote_v}** (local: {local_v or 'none'}).")
+
+    if st.session_state.get("aop_remote_v") and st.session_state["aop_remote_v"] != local_v:
+        if st.button(f"Download {st.session_state['aop_remote_v']}", key="aop_download"):
+            with st.spinner("Downloading XML dump (~10 MB)..."):
+                try:
+                    aopwiki_xml.download_dump(st.session_state["aop_remote_v"])
+                    aopwiki_xml.get_index(force_reload=True)
+                    st.success(f"Updated to {st.session_state['aop_remote_v']}.")
+                    st.session_state.pop("aop_remote_v", None)
+                except Exception as exc:
+                    st.error(f"Download failed: {exc}")
 
     st.divider()
     if st.button("Clear all Table 1 data", type="secondary"):
@@ -178,30 +258,44 @@ with tab2:
         "Upload PDF(s)",
         type=["pdf"],
         accept_multiple_files=True,
-        help="Upload one or more full-text papers as PDFs.",
+        help="Upload one or more full-text papers as PDFs. The DOI is detected automatically.",
     )
 
-    paper_doi = st.text_input(
-        "DOI of the uploaded paper",
-        placeholder="10.1016/j.tox.2022.01.001",
-        help=(
-            "If uploading multiple PDFs in one batch, enter the DOI of the "
-            "first paper. You can process papers one at a time for precise DOI tracking."
-        ),
-    )
+    # Auto-detect a DOI for each uploaded PDF and let the user override if wrong.
+    doi_overrides: dict[str, str] = {}
+    if uploaded_files:
+        st.markdown("**Detected DOIs** (edit any field to override):")
+        for f in uploaded_files:
+            cache_key = f"_auto_doi::{f.name}::{f.size}"
+            if cache_key not in st.session_state:
+                try:
+                    st.session_state[cache_key] = extract_doi_from_pdf(f) or ""
+                except Exception:
+                    st.session_state[cache_key] = ""
+            auto_doi = st.session_state[cache_key]
+            placeholder = "10.1016/j.tox.2022.01.001 (not found — please enter)"
+            doi_overrides[f.name] = st.text_input(
+                f.name,
+                value=auto_doi,
+                key=f"doi_input::{f.name}",
+                placeholder=placeholder,
+                help="Auto-extracted from the PDF; edit if it looks wrong.",
+            )
 
     run_extraction = st.button("Extract KERs", type="primary", key="run_extraction")
 
     if run_extraction:
         if not uploaded_files:
             st.error("Please upload at least one PDF.")
-        elif not paper_doi.strip():
-            st.error("Please enter the DOI of the paper.")
+        elif any(not (doi_overrides.get(f.name) or "").strip() for f in uploaded_files):
+            missing = [f.name for f in uploaded_files if not (doi_overrides.get(f.name) or "").strip()]
+            st.error("Missing DOI for: " + ", ".join(missing))
         elif not extraction_model.strip():
             st.error("Please enter an Ollama model name in the sidebar (e.g. llama3.1:8b).")
         else:
             for uploaded_file in uploaded_files:
-                st.markdown(f"**Processing:** `{uploaded_file.name}`")
+                paper_doi = doi_overrides[uploaded_file.name].strip()
+                st.markdown(f"**Processing:** `{uploaded_file.name}` — DOI `{paper_doi}`")
 
                 # Step 1 — extract text
                 with st.spinner("Extracting text from PDF..."):
@@ -214,17 +308,45 @@ with tab2:
                         st.error(str(e))
                         continue
 
-                # Step 2 — LLM extraction via Ollama
-                with st.spinner(f"Sending to Ollama ({extraction_model}) for KER extraction — this may take 1-3 minutes..."):
+                # Step 2 — LLM extraction via Ollama (multi-step pipeline)
+                debug_container = st.expander("Per-step LLM debug (prompts + raw responses)", expanded=False)
+                step_log: list = []
+
+                def _on_step(step_result, _container=debug_container, _log=step_log):
+                    _log.append(step_result)
+                    status = "OK" if step_result.ok else "FAIL"
+                    with _container:
+                        st.markdown(f"**[{status}] {step_result.step}**")
+                        if step_result.error:
+                            st.error(step_result.error)
+                        with st.expander("Prompt", expanded=False):
+                            st.code(step_result.prompt, language="text")
+                        with st.expander("Raw response", expanded=False):
+                            st.code(step_result.raw_response or "<empty>", language="json")
+                        if step_result.ok and step_result.parsed is not None:
+                            with st.expander("Parsed JSON", expanded=False):
+                                st.json(step_result.parsed)
+                        st.divider()
+
+                llm_cfg = LLMConfig(
+                    provider=provider_cfg["provider"],
+                    model=extraction_model.strip(),
+                    api_key=(api_key_value or None) if provider_cfg["needs_key"] else None,
+                    base_url=api_base_url.strip() or None,
+                )
+
+                with st.spinner(f"Running stepwise extraction with {extraction_model} ({provider_label}) — this may take a few minutes..."):
                     try:
                         extractions, warnings = extract_kers_from_text(
                             paper_text=paper_text,
-                            model=extraction_model,
-                            ollama_url=ollama_url_input.strip(),
+                            cfg=llm_cfg,
+                            on_step=_on_step,
                         )
                     except ExtractionError as e:
                         st.error(str(e))
                         continue
+
+                st.caption(f"LLM calls executed: {len(step_log)} (failures: {sum(1 for s in step_log if not s.ok)})")
 
                 if warnings:
                     for w in warnings:
