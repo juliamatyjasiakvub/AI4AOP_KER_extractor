@@ -99,6 +99,8 @@ with tab1:
     if run_search:
         if not query.strip():
             st.error("Please enter a PubMed query.")
+        elif not ollama_model.strip():
+            st.error("Please enter an Ollama model name in the sidebar (e.g. llama3.1:8b).")
         else:
             try:
                 with st.spinner("Fetching PubMed records..."):
@@ -165,7 +167,7 @@ with tab2:
     st.header("KER extraction from full-text papers")
     st.caption(
         "Upload PDFs of papers that passed Stage 1 screening. "
-        "Claude extracts KERs, then AOP-Wiki IDs are looked up automatically."
+        "A local Ollama model extracts KERs, then AOP-Wiki IDs are looked up automatically."
     )
 
     # -----------------------------------------------------------------------
@@ -195,8 +197,8 @@ with tab2:
             st.error("Please upload at least one PDF.")
         elif not paper_doi.strip():
             st.error("Please enter the DOI of the paper.")
-        elif not anthropic_key.strip():
-            st.error("Please enter your Anthropic API key in the sidebar.")
+        elif not extraction_model.strip():
+            st.error("Please enter an Ollama model name in the sidebar (e.g. llama3.1:8b).")
         else:
             for uploaded_file in uploaded_files:
                 st.markdown(f"**Processing:** `{uploaded_file.name}`")
@@ -207,6 +209,7 @@ with tab2:
                         raw_text = extract_text_from_pdf(uploaded_file)
                         paper_text = truncate_to_token_budget(raw_text)
                         st.caption(f"Text extracted: {len(raw_text):,} chars → {len(paper_text):,} chars sent to API")
+                        print('paper_text', paper_text, 'end of paper_text')
                     except RuntimeError as e:
                         st.error(str(e))
                         continue

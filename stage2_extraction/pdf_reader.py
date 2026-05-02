@@ -59,8 +59,8 @@ def truncate_to_token_budget(text: str, max_chars: int = 60_000) -> str:
     """
     Hard-truncate text to a character limit before sending to the API.
 
-    60 000 chars ≈ 15 000 tokens — well within Claude's context window while
-    keeping API costs predictable. For very long papers the most important
+    60 000 chars ≈ 15 000 tokens — well within typical local LLM context
+    windows while keeping inference time predictable. For very long papers the most important
     mechanistic content is nearly always in the introduction, methods, results,
     and discussion; the reference list is less important.
 

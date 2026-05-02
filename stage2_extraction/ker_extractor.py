@@ -4,9 +4,6 @@ from __future__ import annotations
 Send full paper text to a local Ollama model and parse the returned KER JSON.
 
 Uses the same /api/generate endpoint as screening.py — no new dependencies.
-
-Swapping to Anthropic later: replace _call_ollama() with _call_anthropic()
-and update extract_kers_from_text() to call it instead.
 """
 
 import json
@@ -36,17 +33,26 @@ CONFIDENCE_VALUES = {"High", "Medium", "Low"}
 
 _SYSTEM = (
     "You are a specialist in adverse outcome pathway (AOP) toxicology and the AOP-Wiki "
-    "data model. Extract Key Event Relationships (KERs) from scientific papers.\n\n"
-    "STRICT OUTPUT RULES:\n"
+    "data model. Your job is to extract Key Event Relationships (KERs) from scientific papers.\n\n"
+    "A KER is any causal/mechanistic link the paper describes between an upstream "
+    "biological event (e.g. receptor activation, oxidative stress, DNA damage) and a "
+    "downstream event (e.g. apoptosis, inflammation, organ dysfunction, disease).\n"
+    "Most toxicology / mechanism papers contain AT LEAST ONE KER. Returning an empty "
+    "list is only correct if the paper has no mechanistic content at all (e.g. pure "
+    "exposure-assessment or analytical-method papers).\n\n"
+    "OUTPUT RULES:\n"
     "1. Return ONLY valid JSON. No explanation, no markdown fences, no extra text.\n"
-    "2. Top-level key must be 'kers' whose value is an array.\n"
-    "3. Every field must appear in every KER object. Use JSON null for unknown fields.\n"
+    "2. Top-level key must be 'kers' whose value is an array of KER objects.\n"
+    "3. Use JSON null for unknown optional fields. Use 'Not specified' for unknown "
+    "applicability fields. Required fields (see spec) must always be filled with the "
+    "best supported value from the paper.\n"
     "4. Use EXACT enum strings listed below.\n"
-    "5. Never invent data not present in the paper.\n"
+    "5. Prefer extracting partial KERs (with nulls for unknown fields) over returning "
+    "an empty list. Do not invent specific numbers, DOIs, or species not in the paper.\n"
 )
 
 _FIELD_SPEC = (
-    "Each KER object must have ALL these fields:\n"
+    "Each KER object can have these fields:\n"
     "upstream_ke_name            : string\n"
     "upstream_ke_level           : MIE|Molecular|Cellular|Tissue|Organ|Individual|Population\n"
     "downstream_ke_name          : string\n"
@@ -75,11 +81,46 @@ _FIELD_SPEC = (
 )
 
 
+_EXAMPLE = (
+    'EXAMPLE OUTPUT FORMAT (illustrative only — do not copy its content):\n'
+    '{"kers": [{'
+    '"upstream_ke_name": "Activation of AhR", '
+    '"upstream_ke_level": "Molecular", '
+    '"downstream_ke_name": "Induction of CYP1A1", '
+    '"downstream_ke_level": "Cellular", '
+    '"ker_name": "Activation of AhR leads to Induction of CYP1A1", '
+    '"ker_description": "Ligand binding to AhR drives nuclear translocation and '
+    'transcription of CYP1A1.", '
+    '"ker_adjacency": "Adjacent", '
+    '"paper_type": "Primary study", '
+    '"cited_evidence_dois": null, '
+    '"biological_plausibility": "Well-established receptor-mediated transcription.", '
+    '"empirical_evidence_summary": "qPCR showed >10x CYP1A1 induction after TCDD.", '
+    '"essentiality_evidence": null, '
+    '"contradicts_ker": false, '
+    '"taxonomic_applicability": "Mus musculus", '
+    '"sex_applicability": "Male", '
+    '"life_stage_applicability": "Adult", '
+    '"modulating_factors": null, '
+    '"quantitative_relationships": null, '
+    '"response_response_relationship": null, '
+    '"time_scale": "Hours", '
+    '"feedforward_feedback_loops": null, '
+    '"study_design": "In vivo", '
+    '"exposure_route": "Oral gavage", '
+    '"chemical_stressor": "TCDD", '
+    '"extraction_confidence": "High"'
+    '}]}\n'
+)
+
+
 def _build_prompt(paper_text: str) -> str:
     return (
-        f"{_SYSTEM}\n{_FIELD_SPEC}\n"
-        f"Extract all KERs from this paper and return JSON object "
-        f'with key "kers" containing an array:\n\nPAPER:\n{paper_text}\n\nJSON:'
+        f"{_SYSTEM}\n{_FIELD_SPEC}\n{_EXAMPLE}\n"
+        f"Now extract every KER described or supported by the following paper. "
+        f"Aim for at least one KER if any mechanistic link is mentioned. "
+        f'Return ONLY a JSON object with key "kers".\n\n'
+        f"PAPER:\n{paper_text}\n\nJSON:"
     )
 
 
@@ -97,13 +138,23 @@ def _call_ollama(prompt: str, model: str) -> str:
         "prompt": prompt,
         "stream": False,
         "format": "json",
-        "options": {"temperature": 0.1, "num_ctx": 16384},
+        "options": {
+            "temperature": 0.1,
+            # Total context window (prompt + response). 32k fits ~60k chars of
+            # paper text plus several KER objects. Falls back gracefully on
+            # models with smaller native context.
+            "num_ctx": 65536,
+            # Hard cap on generated tokens. The default (~128) is far too small
+            # to emit even one fully-populated KER object, which is the most
+            # common cause of an empty 'kers' list.
+            "num_predict": 4096,
+        },
     }
     try:
         r = requests.post(
             f"{OLLAMA_URL}/api/generate",
             json=payload,
-            timeout=600,
+            timeout=1200,
         )
         r.raise_for_status()
     except requests.RequestException as exc:
@@ -244,9 +295,16 @@ def extract_kers_from_text(
             warnings.append(f"KER {i+1} skipped — {exc}")
 
     if not extractions and not warnings:
+        # Surface the actual model output so the user can see WHY it was empty
+        # (e.g. the model wrote a refusal, a different JSON shape, or really
+        # judged the paper to have no mechanistic content).
+        snippet = raw_text.strip()[:500] or "<empty response>"
         warnings.append(
-            "Model returned an empty KER list. "
-            "The paper may lack mechanistic content, or try a larger model (e.g. llama3.1:70b)."
+            "Model returned an empty KER list. Possible causes:\n"
+            "• Paper lacks mechanistic content (analytical-method or exposure-only paper).\n"
+            "• Model is too small — try a larger one (e.g. llama3.1:70b, qwen2.5:14b).\n"
+            "• Output was truncated — try a model with a larger context window.\n"
+            f"Raw model output (first 500 chars):\n{snippet}"
         )
 
     return extractions, warnings
