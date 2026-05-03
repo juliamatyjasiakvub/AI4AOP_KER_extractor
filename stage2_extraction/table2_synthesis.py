@@ -92,14 +92,22 @@ def compute_table2(table1_df: pd.DataFrame) -> pd.DataFrame:
         n_contra = int(group["contradicts_ker"].sum())
         n_support = n_total - n_contra
 
+        upstream_name = _first_non_null(group["upstream_ke_name"])
+        downstream_name = _first_non_null(group["downstream_ke_name"])
+        ker_name = _first_non_null(group["ker_name"])
+        
+        # If ker_name is missing, generate from upstream and downstream
+        if not ker_name and upstream_name and downstream_name:
+            ker_name = f"{upstream_name} leads to {downstream_name}"
+        
         row: dict = {
             # Identity
             "ker_key": ker_key,
             "ker_id": _first_non_null(group["ker_id"].astype(str)),
-            "ker_name": _first_non_null(group["ker_name"]),
-            "upstream_ke_name": _first_non_null(group["upstream_ke_name"]),
+            "ker_name": ker_name,
+            "upstream_ke_name": upstream_name,
             "upstream_ke_id": _first_non_null(group["upstream_ke_id"].astype(str)),
-            "downstream_ke_name": _first_non_null(group["downstream_ke_name"]),
+            "downstream_ke_name": downstream_name,
             "downstream_ke_id": _first_non_null(group["downstream_ke_id"].astype(str)),
             "aop_id": _join_unique(group["aop_id"]),
             "aop_status": "existing" if any(group["aop_status"] == "existing") else "novel",

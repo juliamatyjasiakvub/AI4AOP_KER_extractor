@@ -10,13 +10,14 @@ from schemas import PubMedRecord, ScreeningDecision
 from stage1_search.pubmed_search import search_pubmed
 from stage1_search.screening import screen_record
 from stage1_search.export import build_export_dataframe, dataframe_to_csv_bytes
-from stage2_extraction.pdf_reader import extract_text_from_pdf, truncate_to_token_budget, extract_doi_from_pdf
+from stage2_extraction.pdf_reader import extract_text_from_pdf, truncate_to_token_budget, extract_doi_from_pdf, _strip_references
 from stage2_extraction.ker_extractor import extract_kers_from_text, ExtractionError
 from stage2_extraction.llm_providers import LLMConfig
 from stage2_extraction.aopwiki_client import enrich_ker
 from stage2_extraction import aopwiki_xml
 from stage2_extraction.table1_store import init_db, insert_table1_row, load_table1_as_dataframe, clear_all_table1
 from stage2_extraction.table2_synthesis import compute_table2
+from stage2_extraction.aop_visualizer import build_pathway_graph, render_interactive_graph, get_pathway_chains
 
 # ---------------------------------------------------------------------------
 # App-wide setup
@@ -147,7 +148,7 @@ with st.sidebar:
 # Tabs
 # ---------------------------------------------------------------------------
 
-tab1, tab2 = st.tabs(["Stage 1 — Search & screen", "Stage 2 — KER extraction"])
+tab1, tab2, tab3 = st.tabs(["Stage 1 — Search & screen", "Stage 2 — KER extraction", "Pathway Visualization"])
 
 
 # ===========================================================================
@@ -301,8 +302,9 @@ with tab2:
                 with st.spinner("Extracting text from PDF..."):
                     try:
                         raw_text = extract_text_from_pdf(uploaded_file)
-                        paper_text = truncate_to_token_budget(raw_text)
-                        st.caption(f"Text extracted: {len(raw_text):,} chars → {len(paper_text):,} chars sent to API")
+                        text_no_refs = _strip_references(raw_text)
+                        paper_text = truncate_to_token_budget(text_no_refs)
+                        st.caption(f"Text extracted: {len(raw_text):,} chars → {len(text_no_refs):,} chars (after removing references) → {len(paper_text):,} chars sent to API")
                         print('paper_text', paper_text, 'end of paper_text')
                     except RuntimeError as e:
                         st.error(str(e))
@@ -448,3 +450,107 @@ with tab2:
             "**biological_plausibility_synthesis**, **review_status**. "
             "Edit these in the downloaded CSV and re-import, or add a review interface in a future release."
         )
+
+
+# ===========================================================================
+# TAB 3 — AOP Pathway Visualization
+# ===========================================================================
+
+with tab3:
+    st.header("AOP Pathway Visualization")
+    st.caption(
+        "Visualize the synthesized Key Event Relationships as an interactive directed graph. "
+        "Nodes are Key Events (KEs), edges are KERs with evidence from all papers."
+    )
+
+    # Load Table 1 and compute Table 2
+    t1_df = load_table1_as_dataframe()
+
+    if t1_df.empty:
+        st.warning("No data in Table 1. Extract KERs from papers in Stage 2 first.")
+    else:
+        # Compute Table 2 if not already computed
+        if "table2_df" not in st.session_state or st.session_state.table2_df is None or st.session_state.table2_df.empty:
+            with st.spinner("Computing Table 2 synthesis..."):
+                table2_df = compute_table2(t1_df)
+                st.session_state.table2_df = table2_df
+        else:
+            table2_df = st.session_state.table2_df
+
+        if table2_df.empty:
+            st.warning("Table 2 is empty. No KERs to visualize.")
+        else:
+            # Filters
+            col1, col2 = st.columns(2)
+            with col1:
+                min_confidence = st.selectbox(
+                    "Minimum uncertainty level",
+                    options=["High", "Moderate", "Low"],
+                    index=2,  # Default to Low (show all)
+                    help="Show only KERs with LOW uncertainty or better",
+                    key="vis_uncertainty",
+                )
+            with col2:
+                include_novel = st.checkbox(
+                    "Include novel KERs",
+                    value=True,
+                    help="Show KERs not yet in AOP-Wiki",
+                    key="vis_novel",
+                )
+
+            # Filter table2 based on criteria
+            table2_filtered = table2_df.copy()
+
+            # Filter by uncertainty
+            uncertainty_order = ["Low", "Moderate", "High"]
+            min_idx = uncertainty_order.index(min_confidence)
+            valid_uncertainties = uncertainty_order[:min_idx+1]
+            table2_filtered = table2_filtered[table2_filtered["uncertainty_level"].isin(valid_uncertainties)]
+
+            # Filter by novelty
+            if not include_novel:
+                table2_filtered = table2_filtered[table2_filtered["aop_status"] == "existing"]
+
+            if table2_filtered.empty:
+                st.info("No KERs match the current filter criteria.")
+            else:
+                # Build and render graph
+                with st.spinner("Building pathway graph..."):
+                    graph = build_pathway_graph(table2_filtered)
+                    html_graph = render_interactive_graph(graph, height=800, physics=True)
+
+                st.components.v1.html(html_graph, height=850)
+
+                # Summary stats
+                st.subheader("Graph Statistics")
+                cols = st.columns(4)
+                cols[0].metric("Key Events (nodes)", graph.number_of_nodes())
+                cols[1].metric("KERs (edges)", graph.number_of_edges())
+                cols[2].metric("Table 1 rows", len(t1_df))
+                cols[3].metric("Table 2 KERs", len(table2_filtered))
+
+                # Pathway chains
+                st.subheader("Identified Pathways")
+                chains = get_pathway_chains(graph, max_length=8)
+
+                if chains:
+                    st.write(f"Found **{len(chains)}** mechanistic pathways (longest chains shown first):")
+                    for i, chain in enumerate(chains[:10], 1):  # Show top 10
+                        chain_str = " → ".join(chain)
+                        st.caption(f"**{i}.** {chain_str} ({len(chain)} events)")
+                else:
+                    st.info("No complete pathways detected (graph may be disconnected or cyclic).")
+
+                # Detailed KER table
+                st.subheader("KER Details")
+                display_cols = [
+                    "ker_name",
+                    "upstream_ke_name",
+                    "downstream_ke_name",
+                    "n_supporting_papers",
+                    "n_contradicting_papers",
+                    "uncertainty_level",
+                    "aop_status",
+                ]
+                available_cols = [c for c in display_cols if c in table2_filtered.columns]
+                st.dataframe(table2_filtered[available_cols], use_container_width=True, height=400)

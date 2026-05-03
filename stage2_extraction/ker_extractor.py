@@ -3,8 +3,7 @@ from __future__ import annotations
 """
 Stepwise KER extraction pipeline.
 
-Instead of asking the LLM to produce one giant JSON object covering every field
-of every KER in a single call, we break the work into small focused steps:
+We break the work into the following steps:
 
     Step 1 — list_ker_pairs        : identify upstream/downstream pairs
     Step 2 — classify_ker          : levels, adjacency, name, description
@@ -16,7 +15,7 @@ of every KER in a single call, we break the work into small focused steps:
 Each step is a separate Ollama call with its own prompt. A StepResult is
 captured for every call (prompt, raw response, parsed value, error) so the
 caller can show exactly what happened at each step — making debugging much
-easier than the previous one-shot prompt.
+easier.
 
 Public entry point:
 
