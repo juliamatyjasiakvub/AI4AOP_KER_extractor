@@ -232,7 +232,7 @@ def render_interactive_graph(graph: nx.DiGraph, height: int = 800, physics: bool
     return html
 
 
-def export_graph_as_json(graph: nx.DiGraph) -> dict:
+def export_graph_json(graph: nx.DiGraph) -> dict:
     """
     Export the graph as a JSON-compatible dictionary for external tools/sharing.
 
