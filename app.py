@@ -17,11 +17,7 @@ from stage2_extraction.aopwiki_client import enrich_ker
 from stage2_extraction import aopwiki_xml
 from stage2_extraction.table1_store import init_db, insert_table1_row, load_table1_as_dataframe, clear_all_table1
 from stage2_extraction.table2_synthesis import compute_table2
-from stage2_extraction.aop_visualizer import build_pathway_graph
-from stage2_extraction.aop_visualizer import render_interactive_graph
-from stage2_extraction.aop_visualizer import get_pathway_chains
-from stage2_extraction.aop_visualizer import export_graph_json
-from stage2_extraction.aop_visualizer import export_graph_csv
+from stage2_extraction.aop_visualizer import build_pathway_graph, render_interactive_graph, get_pathway_chains, export_graph_csv
 
 # ---------------------------------------------------------------------------
 # App-wide setup
