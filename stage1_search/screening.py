@@ -7,6 +7,7 @@ from typing import Iterable, Optional
 import requests
 
 from schemas import PubMedRecord, ScreeningDecision
+from stage2_extraction.llm_providers import LLMConfig
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
@@ -77,25 +78,24 @@ def screen_record(
     query: str,
     inclusion_criteria: Optional[str] = None,
     exclusion_criteria: Optional[str] = None,
-    model: Optional[str] = None,
+    llm_cfg: Optional[LLMConfig] = None,
 ) -> ScreeningDecision:
     prompt = _build_prompt(record, query, inclusion_criteria, exclusion_criteria)
-    payload = {
-        "model": model or OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "format": "json",
-        "options": {"temperature": 0.1},
-    }
-    response = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=180)
-    response.raise_for_status()
-    result = response.json()
-    raw = result.get("response", "")
+    
+    # Use provided LLMConfig or create default Ollama config
+    if llm_cfg is None:
+        llm_cfg = LLMConfig(
+            provider="ollama",
+            model=OLLAMA_MODEL,
+            base_url=OLLAMA_URL,
+        )
+    
+    raw = llm_cfg.generate(prompt)
 
     try:
         parsed = _parse_json(raw)
     except Exception as e:
-        raise ScreeningError(f"Could not parse Ollama JSON response: {e}\nRaw response: {raw[:500]}") from e
+        raise ScreeningError(f"Could not parse LLM JSON response: {e}\nRaw response: {raw[:500]}") from e
 
     decision = str(parsed.get("decision", "maybe")).strip().lower()
     if decision not in {"yes", "no", "maybe"}:
@@ -115,7 +115,7 @@ def screen_records(
     query: str,
     inclusion_criteria: Optional[str] = None,
     exclusion_criteria: Optional[str] = None,
-    model: Optional[str] = None,
+    llm_cfg: Optional[LLMConfig] = None,
 ):
     for record in records:
         yield record, screen_record(
@@ -123,5 +123,5 @@ def screen_records(
             query=query,
             inclusion_criteria=inclusion_criteria,
             exclusion_criteria=exclusion_criteria,
-            model=model,
+            llm_cfg=llm_cfg,
         )

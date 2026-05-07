@@ -30,15 +30,75 @@ init_db()  # ensure SQLite tables exist
 # Sidebar — shared settings
 # ---------------------------------------------------------------------------
 
+# Shared provider configuration
+PROVIDER_DEFAULTS = {
+    "Ollama (local)": {
+        "provider": "ollama",
+        "default_model": "llama3.1:8b",
+        "default_url": os.getenv("OLLAMA_URL", "http://localhost:11434"),
+        "needs_key": False,
+        "model_help": "Local Ollama model tag, e.g. llama3.1:8b, qwen2.5:14b.",
+    },
+    "Anthropic Claude": {
+        "provider": "anthropic",
+        "default_model": "claude-sonnet-4-5",
+        "default_url": "https://api.anthropic.com/v1/messages",
+        "needs_key": True,
+        "env_key": "ANTHROPIC_API_KEY",
+        "model_help": "e.g. claude-sonnet-4-5, claude-opus-4-5, claude-haiku-4-5.",
+    },
+    "OpenAI GPT": {
+        "provider": "openai",
+        "default_model": "gpt-4o",
+        "default_url": "https://api.openai.com/v1/chat/completions",
+        "needs_key": True,
+        "env_key": "OPENAI_API_KEY",
+        "model_help": "e.g. gpt-4o, gpt-4o-mini, gpt-4.1.",
+    },
+}
+
 with st.sidebar:
     st.header("Settings")
 
     st.subheader("Stage 1 — Search & screen")
-    ollama_model = st.text_input(
-        "Ollama model",
-        value=os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
-        help="Local model for title/abstract screening",
+    s1_provider_label = st.selectbox(
+        "LLM provider (Stage 1)",
+        list(PROVIDER_DEFAULTS.keys()),
+        index=0,
+        help=(
+            "Local Ollama is free but limited by your hardware. Cloud providers "
+            "(Claude, GPT) accept much larger inputs and usually give better "
+            "screening quality."
+        ),
+        key="s1_provider_select",
     )
+    s1_provider_cfg = PROVIDER_DEFAULTS[s1_provider_label]
+
+    s1_model = st.text_input(
+        "Model name",
+        value=s1_provider_cfg["default_model"],
+        key=f"s1_model_{s1_provider_cfg['provider']}",
+        help=s1_provider_cfg["model_help"],
+    )
+
+    s1_api_base_url = st.text_input(
+        "API base URL",
+        value=s1_provider_cfg["default_url"],
+        key=f"s1_url_{s1_provider_cfg['provider']}",
+        help="Override only if you proxy the API or run a private endpoint.",
+    )
+
+    s1_api_key_value = ""
+    if s1_provider_cfg["needs_key"]:
+        s1_env_key = s1_provider_cfg.get("env_key", "")
+        s1_api_key_value = st.text_input(
+            "API key",
+            value=os.getenv(s1_env_key, ""),
+            type="password",
+            key=f"s1_key_{s1_provider_cfg['provider']}",
+            help=f"Used only for this session. Falls back to ${s1_env_key} if blank.",
+        )
+    
     year_start = st.number_input("Year start", min_value=1900, max_value=2100, value=2010, step=1)
     year_end   = st.number_input("Year end",   min_value=1900, max_value=2100, value=2026, step=1)
     max_records = st.number_input("Max records", min_value=1, max_value=500, value=25, step=1)
@@ -46,33 +106,8 @@ with st.sidebar:
     st.divider()
 
     st.subheader("Stage 2 — KER extraction")
-    PROVIDER_DEFAULTS = {
-        "Ollama (local)": {
-            "provider": "ollama",
-            "default_model": "llama3.1:8b",
-            "default_url": os.getenv("OLLAMA_URL", "http://localhost:11434"),
-            "needs_key": False,
-            "model_help": "Local Ollama model tag, e.g. llama3.1:8b, qwen2.5:14b.",
-        },
-        "Anthropic Claude": {
-            "provider": "anthropic",
-            "default_model": "claude-sonnet-4-5",
-            "default_url": "https://api.anthropic.com/v1/messages",
-            "needs_key": True,
-            "env_key": "ANTHROPIC_API_KEY",
-            "model_help": "e.g. claude-sonnet-4-5, claude-opus-4-5, claude-haiku-4-5.",
-        },
-        "OpenAI GPT": {
-            "provider": "openai",
-            "default_model": "gpt-4o",
-            "default_url": "https://api.openai.com/v1/chat/completions",
-            "needs_key": True,
-            "env_key": "OPENAI_API_KEY",
-            "model_help": "e.g. gpt-4o, gpt-4o-mini, gpt-4.1.",
-        },
-    }
-    provider_label = st.selectbox(
-        "LLM provider",
+    s2_provider_label = st.selectbox(
+        "LLM provider (Stage 2)",
         list(PROVIDER_DEFAULTS.keys()),
         index=0,
         help=(
@@ -80,32 +115,33 @@ with st.sidebar:
             "(Claude, GPT) accept much larger inputs and usually give better "
             "extraction quality."
         ),
+        key="s2_provider_select",
     )
-    provider_cfg = PROVIDER_DEFAULTS[provider_label]
+    s2_provider_cfg = PROVIDER_DEFAULTS[s2_provider_label]
 
     extraction_model = st.text_input(
         "Model name",
-        value=provider_cfg["default_model"],
-        key=f"model_{provider_cfg['provider']}",
-        help=provider_cfg["model_help"],
+        value=s2_provider_cfg["default_model"],
+        key=f"s2_model_{s2_provider_cfg['provider']}",
+        help=s2_provider_cfg["model_help"],
     )
 
     api_base_url = st.text_input(
         "API base URL",
-        value=provider_cfg["default_url"],
-        key=f"url_{provider_cfg['provider']}",
+        value=s2_provider_cfg["default_url"],
+        key=f"s2_url_{s2_provider_cfg['provider']}",
         help="Override only if you proxy the API or run a private endpoint.",
     )
 
     api_key_value = ""
-    if provider_cfg["needs_key"]:
-        env_key = provider_cfg.get("env_key", "")
+    if s2_provider_cfg["needs_key"]:
+        s2_env_key = s2_provider_cfg.get("env_key", "")
         api_key_value = st.text_input(
             "API key",
-            value=os.getenv(env_key, ""),
+            value=os.getenv(s2_env_key, ""),
             type="password",
-            key=f"key_{provider_cfg['provider']}",
-            help=f"Used only for this session. Falls back to ${env_key} if blank.",
+            key=f"s2_key_{s2_provider_cfg['provider']}",
+            help=f"Used only for this session. Falls back to ${s2_env_key} if blank.",
         )
 
     st.divider()
@@ -157,7 +193,7 @@ tab1, tab2, tab3 = st.tabs(["Stage 1 — Search & screen", "Stage 2 — KER extr
 
 with tab1:
     st.header("PubMed search & title/abstract screening")
-    st.caption("Search PubMed and screen results using a local Ollama model.")
+    st.caption("Search PubMed and screen results using the configured LLM provider.")
 
     query = st.text_area(
         "PubMed query", height=80,
@@ -180,8 +216,8 @@ with tab1:
     if run_search:
         if not query.strip():
             st.error("Please enter a PubMed query.")
-        elif not ollama_model.strip():
-            st.error("Please enter an Ollama model name in the sidebar (e.g. llama3.1:8b).")
+        elif not s1_model.strip():
+            st.error("Please enter a model name in the sidebar (e.g. llama3.1:8b).")
         else:
             try:
                 with st.spinner("Fetching PubMed records..."):
@@ -196,14 +232,23 @@ with tab1:
                     st.warning("No PubMed records found.")
                 else:
                     screened_pairs: List[Tuple[PubMedRecord, ScreeningDecision]] = []
-                    progress = st.progress(0, text="Screening with Ollama...")
+                    progress = st.progress(0, text="Screening...")
+                    
+                    # Create LLMConfig for Stage 1
+                    llm_cfg_s1 = LLMConfig(
+                        provider=s1_provider_cfg["provider"],
+                        model=s1_model.strip(),
+                        api_key=(s1_api_key_value or None) if s1_provider_cfg["needs_key"] else None,
+                        base_url=s1_api_base_url.strip() or None,
+                    )
+                    
                     for idx, record in enumerate(records, start=1):
                         decision = screen_record(
                             record=record,
                             query=query,
                             inclusion_criteria=inclusion_criteria,
                             exclusion_criteria=exclusion_criteria,
-                            model=ollama_model,
+                            llm_cfg=llm_cfg_s1,
                         )
                         screened_pairs.append((record, decision))
                         progress.progress(idx / len(records), text=f"Screened {idx}/{len(records)}")
@@ -292,7 +337,7 @@ with tab2:
             missing = [f.name for f in uploaded_files if not (doi_overrides.get(f.name) or "").strip()]
             st.error("Missing DOI for: " + ", ".join(missing))
         elif not extraction_model.strip():
-            st.error("Please enter an Ollama model name in the sidebar (e.g. llama3.1:8b).")
+            st.error("Please enter a model name in the sidebar (e.g. llama3.1:8b).")
         else:
             for uploaded_file in uploaded_files:
                 paper_doi = doi_overrides[uploaded_file.name].strip()
@@ -331,13 +376,13 @@ with tab2:
                         st.divider()
 
                 llm_cfg = LLMConfig(
-                    provider=provider_cfg["provider"],
+                    provider=s2_provider_cfg["provider"],
                     model=extraction_model.strip(),
-                    api_key=(api_key_value or None) if provider_cfg["needs_key"] else None,
+                    api_key=(api_key_value or None) if s2_provider_cfg["needs_key"] else None,
                     base_url=api_base_url.strip() or None,
                 )
 
-                with st.spinner(f"Running stepwise extraction with {extraction_model} ({provider_label}) — this may take a few minutes..."):
+                with st.spinner(f"Running stepwise extraction with {extraction_model} ({s2_provider_label}) — this may take a few minutes..."):
                     try:
                         extractions, warnings = extract_kers_from_text(
                             paper_text=paper_text,
