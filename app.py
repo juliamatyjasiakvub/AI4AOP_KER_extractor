@@ -17,7 +17,7 @@ from stage2_extraction.aopwiki_client import enrich_ker
 from stage2_extraction import aopwiki_xml
 from stage2_extraction.table1_store import init_db, insert_table1_row, load_table1_as_dataframe, clear_all_table1
 from stage2_extraction.table2_synthesis import compute_table2
-from stage2_extraction.aop_visualizer import build_pathway_graph, render_interactive_graph, get_pathway_chains
+from stage2_extraction.aop_visualizer import build_pathway_graph, render_interactive_graph, get_pathway_chains, export_graph_json, export_graph_png, export_graph_csv
 
 # ---------------------------------------------------------------------------
 # App-wide setup
@@ -520,6 +520,45 @@ with tab3:
                     html_graph = render_interactive_graph(graph, height=800, physics=True)
 
                 st.components.v1.html(html_graph, height=850)
+
+                # Initialize PNG export settings in session state
+                if 'png_k' not in st.session_state:
+                    st.session_state.png_k = 10.0
+                if 'png_iterations' not in st.session_state:
+                    st.session_state.png_iterations = 500
+                if 'png_scale' not in st.session_state:
+                    st.session_state.png_scale = 30.0
+                if 'png_threshold' not in st.session_state:
+                    st.session_state.png_threshold = 1e-7
+
+                # Export options
+                st.subheader("Export Visualization")
+                export_col1, export_col2, export_col3 = st.columns(3)
+                
+                with export_col1:
+                    json_export = export_graph_json(graph, table2_filtered)
+                    st.download_button(
+                        label="📥 JSON (data + metadata)",
+                        data=json_export,
+                        file_name="aop_pathway.json",
+                        mime="application/json",
+                        help="Complete graph data with table2 metadata — recreate in external tools",
+                    )
+                
+                with export_col2:
+                    nodes_csv, edges_csv = export_graph_csv(graph, table2_filtered)
+                    # Create a combined CSV with both nodes and edges
+                    combined_csv = f"NODES:\n{nodes_csv}\n\nEDGES:\n{edges_csv}"
+                    st.download_button(
+                        label="📥 CSV (nodes + edges)",
+                        data=combined_csv,
+                        file_name="aop_pathway.csv",
+                        mime="text/csv",
+                        help="Graph data as CSV — import into Excel, Python, or graph databases",
+                    )
+
+                with export_col3:
+                    st.info("📥 Use the *Save image as...* button inside the graph to download it.")
 
                 # Summary stats
                 st.subheader("Graph Statistics")

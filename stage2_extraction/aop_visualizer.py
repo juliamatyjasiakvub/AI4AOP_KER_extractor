@@ -8,7 +8,6 @@ from typing import Optional
 import networkx as nx
 import pandas as pd
 
-
 # Color mapping for KE levels
 KE_LEVEL_COLORS = {
     "MIE": "#e74c3c",                  # Red
@@ -214,6 +213,7 @@ def render_interactive_graph(graph: nx.DiGraph, height: int = 800, physics: bool
                 nodes: nodes,
                 edges: edges
             }};
+
             var options = {{
                 physics: {json.dumps(physics_config)},
                 interaction: {{
@@ -221,7 +221,9 @@ def render_interactive_graph(graph: nx.DiGraph, height: int = 800, physics: bool
                     keyboard: true
                 }}
             }};
+
             var network = new vis.Network(container, data, options);
+
         </script>
     </body>
     </html>
@@ -310,3 +312,228 @@ def get_pathway_chains(graph: nx.DiGraph, max_length: int = 10) -> list[list[str
     unique_paths = sorted(unique_paths, key=len, reverse=True)
 
     return [list(p) for p in unique_paths]
+
+
+def export_graph_json(graph: nx.DiGraph, table2_df: pd.DataFrame) -> str:
+    """
+    Export graph and associated metadata as comprehensive JSON.
+    
+    Includes all nodes, edges, and metadata for recreating the visualization
+    in external tools or for archival purposes.
+    
+    Parameters
+    ----------
+    graph : nx.DiGraph
+        The pathway graph.
+    table2_df : pd.DataFrame
+        Table 2 data (for metadata).
+    
+    Returns
+    -------
+    str
+        JSON string with complete graph data.
+    """
+    nodes = []
+    for node_id, attrs in graph.nodes(data=True):
+        nodes.append({
+            "id": node_id,
+            "label": node_id,
+            "level": attrs.get("level", "Unknown"),
+            "color": attrs.get("color", "#95a5a6"),
+            "size": attrs.get("size", 25),
+        })
+
+    edges = []
+    for source, target, attrs in graph.edges(data=True):
+        edges.append({
+            "source": source,
+            "target": target,
+            "label": attrs.get("ker_name", ""),
+            "n_supporting": attrs.get("n_supporting", 0),
+            "n_contradicting": attrs.get("n_contradicting", 0),
+            "color": attrs.get("color", "#999999"),
+            "width": attrs.get("width", 2),
+        })
+
+    # Include table 2 data for reference
+    table2_records = table2_df.to_dict("records") if not table2_df.empty else []
+
+    export_data = {
+        "graph_metadata": {
+            "num_nodes": graph.number_of_nodes(),
+            "num_edges": graph.number_of_edges(),
+            "num_kers_total": len(table2_df),
+        },
+        "nodes": nodes,
+        "edges": edges,
+        "table2_data": table2_records,
+    }
+
+    return json.dumps(export_data, indent=2)
+
+
+def export_graph_png(graph: nx.DiGraph, width: int = 24, height: int = 18, dpi: int = 100, 
+                      k: float = 10.0, iterations: int = 500, scale: float = 30.0, 
+                      threshold: float = 1e-7) -> bytes:
+    """
+    Export graph as PNG with full node labels and strong repulsion to prevent overlaps.
+    
+    Nodes are sized based on text length to accommodate full labels.
+    Uses aggressive repulsion to keep all nodes well-separated.
+    
+    Parameters
+    ----------
+    graph : nx.DiGraph
+        The pathway graph.
+    width : int
+        Output image width in inches.
+    height : int
+        Output image height in inches.
+    dpi : int
+        Resolution in dots per inch.
+    k : float
+        Spring constant (higher = more repulsion between nodes).
+    iterations : int
+        Number of layout iterations (higher = better convergence).
+    scale : float
+        Scale factor for node positions (higher = nodes spread further).
+    threshold : float
+        Convergence threshold for layout algorithm.
+    
+    Returns
+    -------
+    bytes
+        PNG image data as bytes.
+    """
+    try:
+        import matplotlib.pyplot as plt
+        from io import BytesIO
+    except ImportError:
+        raise RuntimeError("matplotlib and Pillow are required for PNG export. Install with: pip install matplotlib Pillow")
+
+    if graph.number_of_nodes() == 0:
+        raise ValueError("No graph data to export")
+
+    # Use spring layout with configurable repulsion
+    pos = nx.spring_layout(
+        graph,
+        k=k,
+        iterations=iterations,
+        seed=42,
+        scale=scale,
+        threshold=threshold,
+    )
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=(width, height), dpi=dpi)
+    ax.set_facecolor('white')
+    ax.axis('off')
+
+    # Draw edges first
+    for source, target, attrs in graph.edges(data=True):
+        x1, y1 = pos[source]
+        x2, y2 = pos[target]
+        color = attrs.get("color", "#cccccc")
+        width_attr = max(0.3, attrs.get("width", 1.5) * 0.3)
+        
+        ax.annotate(
+            '', xy=(x2, y2), xytext=(x1, y1),
+            arrowprops=dict(
+                arrowstyle='->', lw=width_attr, color=color, 
+                alpha=0.4, connectionstyle="arc3,rad=0.05"
+            )
+        )
+
+    # Draw nodes with full text (no truncation)
+    for node, (x, y) in pos.items():
+        node_attrs = graph.nodes[node]
+        color = node_attrs.get("color", "#95a5a6")
+        label = str(node)  # Use full text - no truncation
+        
+        # Size box based on text length
+        text_len = len(label)
+        fontsize = 7
+        
+        # Calculate padding dynamically
+        if text_len > 50:
+            fontsize = 6
+            pad = 0.6
+        elif text_len > 30:
+            pad = 0.55
+        else:
+            pad = 0.5
+        
+        # Draw node as colored box with text inside
+        bbox_props = dict(
+            boxstyle='round,pad=' + str(pad),
+            facecolor=color,
+            edgecolor='black',
+            linewidth=0.8,
+            alpha=0.95
+        )
+        
+        ax.text(
+            x, y, label,
+            ha='center', va='center',
+            fontsize=fontsize,
+            weight='bold',
+            bbox=bbox_props,
+            zorder=3,
+            wrap=True
+        )
+
+    # Auto-scale axes with generous margin
+    if pos:
+        xs = [p[0] for p in pos.values()]
+        ys = [p[1] for p in pos.values()]
+        margin = 1.0
+        ax.set_xlim(min(xs) - margin, max(xs) + margin)
+        ax.set_ylim(min(ys) - margin, max(ys) + margin)
+
+    ax.set_aspect('equal')
+
+    # Save to bytes buffer
+    buffer = BytesIO()
+    plt.savefig(buffer, format='png', dpi=dpi, bbox_inches='tight', facecolor='white', pad_inches=0.3)
+    plt.close(fig)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+
+def export_graph_csv(graph: nx.DiGraph, table2_df: pd.DataFrame) -> tuple[str, str]:
+    """
+    Export graph nodes and edges as CSV strings.
+    
+    Returns
+    -------
+    tuple[str, str]
+        (nodes_csv, edges_csv) — both as comma-separated strings ready for download.
+    """
+    import io
+
+    # Nodes CSV
+    nodes_data = []
+    for node_id, attrs in graph.nodes(data=True):
+        nodes_data.append({
+            "ke_name": node_id,
+            "level": attrs.get("level", "Unknown"),
+            "color": attrs.get("color", "#95a5a6"),
+        })
+    nodes_df = pd.DataFrame(nodes_data)
+    nodes_csv = nodes_df.to_csv(index=False)
+
+    # Edges CSV
+    edges_data = []
+    for source, target, attrs in graph.edges(data=True):
+        edges_data.append({
+            "upstream_ke": source,
+            "downstream_ke": target,
+            "ker_name": attrs.get("ker_name", ""),
+            "n_supporting_papers": attrs.get("n_supporting", 0),
+            "n_contradicting_papers": attrs.get("n_contradicting", 0),
+        })
+    edges_df = pd.DataFrame(edges_data)
+    edges_csv = edges_df.to_csv(index=False)
+
+    return nodes_csv, edges_csv
