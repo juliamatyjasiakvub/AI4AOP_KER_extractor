@@ -294,7 +294,7 @@ with tab2:
     st.header("KER extraction from full-text papers")
     st.caption(
         "Upload PDFs of papers that passed Stage 1 screening. "
-        "A local Ollama model extracts KERs, then AOP-Wiki IDs are looked up automatically."
+        "The LLM extracts biological KE/KERs, AOP-Wiki IDs are looked up automatically."
     )
 
     # -----------------------------------------------------------------------
