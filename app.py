@@ -193,7 +193,8 @@ tab1, tab2, tab3 = st.tabs(["Stage 1 — Search & screen", "Stage 2 — KER extr
 
 with tab1:
     st.header("PubMed search & title/abstract screening")
-    st.caption("Search PubMed and screen results using the configured LLM provider.")
+    st.caption("Section 1 of the tool aims to supplement your PubMed search for AOP development.\n\n"
+    "Input a PubMed query and screen results using the configured LLM provider.")
 
     query = st.text_area(
         "PubMed query", height=80,
