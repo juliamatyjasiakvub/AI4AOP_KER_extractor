@@ -231,6 +231,46 @@ def render_interactive_graph(graph: nx.DiGraph, height: int = 800, physics: bool
     
     return html
 
+
+def export_graph_as_json(graph: nx.DiGraph) -> dict:
+    """
+    Export the graph as a JSON-compatible dictionary for external tools/sharing.
+
+    Parameters
+    ----------
+    graph : nx.DiGraph
+        The graph to export.
+
+    Returns
+    -------
+    dict
+        Dictionary with 'nodes' and 'edges' keys, each containing a list.
+    """
+    nodes = []
+    for node_id, attrs in graph.nodes(data=True):
+        nodes.append({
+            "id": node_id,
+            "label": node_id,
+            "level": attrs.get("level", "Unknown"),
+            "color": attrs.get("color", "#95a5a6"),
+            "size": attrs.get("size", 25),
+        })
+
+    edges = []
+    for source, target, attrs in graph.edges(data=True):
+        edges.append({
+            "source": source,
+            "target": target,
+            "label": attrs.get("ker_name", ""),
+            "n_supporting": attrs.get("n_supporting", 0),
+            "n_contradicting": attrs.get("n_contradicting", 0),
+            "color": attrs.get("color", "#999999"),
+            "width": attrs.get("width", 2),
+        })
+
+    return {"nodes": nodes, "edges": edges}
+
+
 def get_pathway_chains(graph: nx.DiGraph, max_length: int = 10) -> list[list[str]]:
     """
     Extract all simple paths (chains) from the graph up to a maximum length.
