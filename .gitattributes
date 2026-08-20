@@ -1,0 +1,36 @@
+# Line endings.
+#
+# This is developed on Windows and will be cloned on macOS and Linux. Without
+# a rule, each contributor's `core.autocrlf` decides what lands in a commit,
+# so the same file can arrive with CRLF from one machine and LF from another —
+# and the diff is the whole file, every time, hiding the one line that changed.
+#
+# `text=auto` normalises to LF in the repository and checks out whatever the
+# platform expects, so the stored form is stable and nobody has to configure
+# anything.
+* text=auto
+
+# Explicitly text, regardless of what git's heuristic guesses.
+*.py    text diff=python
+*.md    text
+*.txt   text
+*.json  text
+*.csv   text
+*.yml   text
+*.yaml  text
+*.toml  text
+*.cfg   text
+*.sh    text eol=lf
+
+# Explicitly binary: never line-ending-converted, never shown as a text diff.
+# The AOP-Wiki dump is not committed, but if one is ever placed here by hand
+# it must not be mangled.
+*.gz    binary
+*.db    binary
+*.pdf   binary
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.xlsx  binary
+*.pptx  binary
+*.docx  binary

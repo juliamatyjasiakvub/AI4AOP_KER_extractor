@@ -1,0 +1,168 @@
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# PEP 582; used by e.g. github.com/David-OConnor/pyflow
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Spyder project settings
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs site
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# OS files
+*.DS_Store
+Thumbs.db
+desktop.ini
+
+# Optional: VS Code workspace settings
+/.vscode/*
+# ---------------------------------------------------------------------------
+# Working data. None of this belongs in the repository, and LEGAL.md and the
+# README both say so — but .gitignore does not apply to files already tracked,
+# and these were. Use `git rm --cached` once; the patterns keep them out after.
+# ---------------------------------------------------------------------------
+
+# The application database. It holds extracted claims and quotations from
+# full-text papers, which are the publishers' content and not redistributable,
+# and it changes on every run — so it also makes every commit a binary diff.
+aop_rag.db
+aop_rag.backup-*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Replicate-measurement output from tools/replicate_run.py.
+replicates.db
+
+# Uploaded or staged full-text papers.
+papers/
+example_files/*.pdf
+
+# API keys, if anyone ever writes them to a file rather than the sidebar.
+.env
+*.key
+
+# AOP-Wiki XML dump. This is AOP-Wiki's curated database, not ours, and
+# redistributing ~10 MB of it inside a code repository is a licensing decision
+# rather than a packaging one. The application downloads it on request instead
+# (sidebar → AOP-Wiki dump), and runs without it if it is absent.
+stage2_extraction/aopwiki_data/*.gz
