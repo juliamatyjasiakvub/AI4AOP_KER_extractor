@@ -254,9 +254,24 @@ The app supports separate provider settings for Stage 1 and Stage 2:
 - **Anthropic Claude**; and
 - **OpenAI GPT**.
 
-When Ollama is selected, model processing stays on the machine running the
-application. When Anthropic or OpenAI is selected, paper text is sent to that
-provider's API.
+**Local processing is the default.** Ollama is preselected, and with it the
+full text of your papers never leaves the machine.
+
+Anthropic and OpenAI are hosted services: selecting one sends the full text of
+every uploaded paper to that company. The application will not run a hosted
+extraction until you confirm a lawful basis and state what it is, and it
+records that statement with the run. **It does not verify your basis, and it
+cannot.** Whether you may transmit a paper to a third party depends on your
+subscription agreements and institutional policy, which no software can read —
+a subscription grants reading, not automatically the right to send the text
+elsewhere, and free-to-read is not a reuse licence. If you are unsure, use
+Ollama.
+
+The local path is the default and is the one this tool is designed around, but
+the results reported for the AI4AOP Challenge were produced with a hosted
+model. Extraction quality on small local models is noticeably lower —
+quotation matching in particular — and the local path has not been benchmarked
+at corpus scale in this release.
 
 **`aop_rag.db` contains the papers.** The PDF file itself is processed in
 memory and not kept, which is easy to mistake for "the paper is not kept" — it
@@ -323,8 +338,8 @@ provided as environment variables:
 | `ANTHROPIC_API_KEY` | Anthropic access for Stage 1 or Stage 2 |
 | `OLLAMA_URL` | Ollama endpoint; defaults to `http://localhost:11434` |
 | `OLLAMA_MODEL` | Default model used by the legacy Stage 1 helper |
-| `NCBI_EMAIL` | Contact email supplied to NCBI E-utilities |
-| `NCBI_API_KEY` | Optional NCBI API key for increased request limits |
+| `NCBI_EMAIL` | Contact email supplied to NCBI E-utilities. Set it — NCBI's usage policy asks that requests identify their sender |
+| `NCBI_API_KEY` | Optional NCBI API key. Without one the tool paces itself to NCBI's anonymous limit of 3 requests/second; with one it uses the 10/second allowance, so a large search finishes about three times faster |
 
 Example for Git Bash:
 

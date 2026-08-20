@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -10,7 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from schemas import KE_LEVEL_ORDER, PubMedRecord, ScreeningDecision
-from stage1_search.pubmed_search import search_pubmed
+from stage1_search.pubmed_search import NCBICredentials, search_pubmed
 from stage1_search.screening import screen_record
 from stage1_search.export import build_export_dataframe, dataframe_to_csv_bytes
 
@@ -408,6 +409,50 @@ if active_stage == STAGE_1:
                 help=f"Used only for this session. Falls back to ${s1_env_key} if blank.",
             ).strip()
 
+        # --- Identifying this client to NCBI -----------------------------
+        #
+        # E-utilities are free and usable without registration, but NCBI's
+        # usage policy asks every request to name the tool and give a contact
+        # address, so a client that misbehaves can be written to rather than
+        # simply blocked. Both were previously settable only through
+        # environment variables, which meant that in practice almost nobody
+        # set them — the LLM keys had sidebar fields and these did not.
+        #
+        # The API key is genuinely optional: without one NCBI allows three
+        # requests a second, with one ten, and the client paces itself to
+        # whichever applies rather than assuming the faster limit.
+        with st.expander("PubMed / NCBI access", expanded=False):
+            ncbi_email = st.text_input(
+                "Contact email for NCBI",
+                value=os.getenv("NCBI_EMAIL", ""),
+                key="ncbi_email",
+                help="NCBI asks that requests identify a contact. Falls back "
+                     "to $NCBI_EMAIL if blank.",
+            ).strip()
+            ncbi_api_key = st.text_input(
+                "NCBI API key (optional)",
+                value=os.getenv("NCBI_API_KEY", ""),
+                type="password",
+                key="ncbi_api_key",
+                help="Free from an NCBI account. Raises the rate limit from 3 "
+                     "to 10 requests/second. Falls back to $NCBI_API_KEY.",
+            ).strip()
+            ncbi_credentials = NCBICredentials(
+                email=ncbi_email or None,
+                api_key=ncbi_api_key or None,
+            )
+            resolved_ncbi = NCBICredentials.resolve(ncbi_credentials)
+            st.caption(
+                f"Searches run at up to {resolved_ncbi.requests_per_second} "
+                f"requests/second"
+                + ("." if resolved_ncbi.api_key else " — add a key to go faster.")
+            )
+            if not resolved_ncbi.email:
+                st.caption(
+                    "⚠️ No contact address set. NCBI asks for one so they can "
+                    "reach you before blocking a client."
+                )
+
         if st.button("Test Stage 1 connection", key="s1_test"):
             try:
                 LLMConfig(
@@ -458,6 +503,51 @@ if active_stage == STAGE_2:
                 key=f"s2_key_{s2_provider_cfg['provider']}",
                 help=f"Used only for this session. Falls back to ${s2_env_key} if blank.",
             ).strip()
+
+        # --- Sending a paper to someone else is a decision -----------------
+        #
+        # Ollama is the default because local processing does not disclose the
+        # paper to a third party. Choosing a hosted provider does, and the
+        # application cannot tell whether the user is allowed to: a subscription
+        # grants reading, not automatically the right to transmit the text to
+        # another company. Licence metadata does not settle it either — much of
+        # the literature has none, and free-to-read is not a reuse licence.
+        #
+        # So this is not a silent default and not a pre-ticked box. It is an
+        # explicit act, recorded with the run, so that a later question about a
+        # particular extraction has an answer other than nobody's recollection.
+        transmission_ack = None
+        if s2_provider_cfg["needs_key"]:
+            st.warning(
+                f"**{s2_provider_label} is a hosted service.** The full text of "
+                "every paper you upload will be sent to it. This tool does not "
+                "check whether you are permitted to do that — subscription "
+                "access grants reading, not necessarily transmission to a third "
+                "party. If you are unsure, switch to **Ollama (local)**, which "
+                "sends nothing off this machine.",
+                icon="⚠️",
+            )
+            acknowledged = st.checkbox(
+                "I have a lawful basis to send these papers to this provider",
+                value=False,
+                key=f"s2_ack_{s2_provider_cfg['provider']}",
+            )
+            basis = st.text_input(
+                "Basis (recorded with the run)",
+                value="",
+                placeholder="e.g. institutional TDM agreement, ref. LIB-2026-014",
+                key=f"s2_basis_{s2_provider_cfg['provider']}",
+                disabled=not acknowledged,
+                help="Stored in the run record so the decision can be audited "
+                     "later. Free text — the tool does not verify it.",
+            ).strip()
+            if acknowledged and basis:
+                transmission_ack = (
+                    f"{s2_provider_label}: {basis} "
+                    f"(acknowledged {datetime.date.today().isoformat()})"
+                )
+            elif acknowledged:
+                st.caption("State the basis to continue.")
 
         # --- What to do when the provider declines -----------------------
         #
@@ -849,6 +939,9 @@ def _build_run_manifest(cfg: LLMConfig) -> RunManifest:
         llm_triage=bool(use_llm_triage) if use_chunking else False,
         ols4_enabled=bool(ols4_enabled),
         ols4_min_score=float(ols4_min_score),
+        # None for a local run, because nothing left the machine and there is
+        # nothing to justify. Present only where paper text was transmitted.
+        transmission_ack=transmission_ack,
     )
 
 
@@ -919,6 +1012,7 @@ if active_stage == STAGE_1:
                             year_start=int(year_start),
                             year_end=int(year_end),
                             max_records=int(max_records),
+                            credentials=ncbi_credentials,
                         )
 
                     if not records:
@@ -1348,6 +1442,16 @@ with tab2:
             st.error("Missing DOI for: " + ", ".join(missing))
         elif not extraction_model.strip():
             st.error("Please enter a model name in the sidebar (e.g. llama3.1:8b).")
+        elif s2_provider_cfg["needs_key"] and not transmission_ack:
+            # Refused, not warned. A warning that can be clicked past is how a
+            # corpus reaches a third party with nobody having decided anything.
+            st.error(
+                f"{s2_provider_label} would send the full text of every "
+                "uploaded paper to a hosted service. Confirm a lawful basis in "
+                "the sidebar, or switch to **Ollama (local)** to process them "
+                "on this machine.",
+                icon="⚠️",
+            )
         else:
             llm_cfg = _stage2_config()
 

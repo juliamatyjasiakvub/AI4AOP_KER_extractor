@@ -236,6 +236,23 @@ def _section_corpus(r: Stage2Report, w) -> None:
             "output is not deterministic even when they do.\n"
         )
 
+        if "transmission_ack" in r.runs.columns:
+            hosted = r.runs[r.runs["transmission_ack"].notna()]
+            if not hosted.empty:
+                w("\nRuns that sent paper text to a hosted provider, and the "
+                  "basis given:\n")
+                w("| Run | Provider | Basis recorded |")
+                w("| ---: | --- | --- |")
+                for _, run in hosted.iterrows():
+                    w(f"| {_text(run.get('run_id'))} | "
+                      f"{_text(run.get('provider'))} | "
+                      f"{_text(run.get('transmission_ack'))} |")
+                w("")
+                w("> The tool records this basis; it does not verify it.\n")
+            else:
+                w("\nNo run sent paper text to a hosted provider — all "
+                  "processing was local.\n")
+
     if not r.papers.empty:
         w(f"\n**{len(r.papers)} source paper(s).**\n")
 

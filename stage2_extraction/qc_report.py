@@ -488,6 +488,7 @@ _MANIFEST_LABELS: list[tuple[str, str]] = [
     ("seed", "Seed"),
     ("max_output_tokens", "Max output tokens"),
     ("num_ctx", "Context window (Ollama)"),
+    ("transmission_ack", "Hosted-processing basis"),
     ("prompt_fingerprint", "Prompt fingerprint"),
     ("budget_scale", "Output budget multiplier"),
     ("code_version", "Code version"),

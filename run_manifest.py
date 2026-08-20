@@ -448,6 +448,16 @@ class RunManifest:
     num_ctx: Optional[int] = None
     seed: Optional[int] = None
 
+    #: The basis a user gave for sending paper text to a hosted provider, and
+    #: the date they gave it.
+    #:
+    #: None on a local run — nothing left the machine, so there is nothing to
+    #: justify. Non-null means full text was transmitted to a third party, and
+    #: this is the only record of who decided that was permissible and on what
+    #: grounds. The tool does not verify the claim; it records it, which is the
+    #: difference between an auditable decision and nobody's recollection.
+    transmission_ack: Optional[str] = None
+
     # Pipeline configuration
     prompt_fingerprint: Optional[str] = None
     budget_scale: Optional[float] = None

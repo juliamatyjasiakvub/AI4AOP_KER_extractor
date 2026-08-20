@@ -853,6 +853,18 @@ _SYNTHESIS_V12_COLUMNS = (
     ("n_rows", "INTEGER NOT NULL DEFAULT 0"),
 )
 
+#: Why paper text was allowed to leave the machine on a hosted run.
+#:
+#: Added with ALTER TABLE and deliberately WITHOUT bumping SCHEMA_VERSION. A
+#: version bump sends any database whose version is not in `_IN_PLACE_UPGRADES`
+#: down the DROP TABLE path, and getting that list wrong destroys a curated
+#: corpus — a risk with no upside here, because the change is one nullable
+#: column that older code simply ignores. `_add_missing_columns` is idempotent,
+#: so this is applied on every `init_db` and is a no-op once present.
+_RUNS_PROVENANCE_COLUMNS = (
+    ("transmission_ack", "TEXT"),
+)
+
 
 # ---------------------------------------------------------------------------
 # Connection + schema management
@@ -955,6 +967,7 @@ def _create_all(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
     _add_missing_columns(conn, "ker_synthesis", _SYNTHESIS_V7_COLUMNS)
     _add_missing_columns(conn, "ker_synthesis", _SYNTHESIS_V12_COLUMNS)
+    _add_missing_columns(conn, "extraction_runs", _RUNS_PROVENANCE_COLUMNS)
     _add_missing_columns(conn, "table1_extractions", _TABLE1_V8_COLUMNS)
     _add_missing_columns(conn, "table1_extractions", _TABLE1_V9_COLUMNS)
     _add_missing_columns(conn, "table1_extractions", _TABLE1_V10_COLUMNS)
