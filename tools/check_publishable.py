@@ -7,7 +7,7 @@ Why this is a script and not a checklist
 This tool reads full-text articles. It writes what it reads into
 `aop_rag.db` — not only the extracted claims and their quotations, but the
 paper text itself, chunk by chunk, so that a quotation can be located and a
-page number reported. One thirteen-paper corpus leaves roughly 750 KB of
+page number reported. A modest corpus leaves hundreds of kilobytes of
 publisher text in that file.
 
 `aop_rag.db` was tracked in git. So was `example_files/*.pdf`. Adding patterns
@@ -47,6 +47,27 @@ BLOCKING_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".pdf"}
 
 #: Filenames that mean credentials regardless of extension.
 BLOCKING_NAMES = {".env", ".env.local", "secrets.json", "credentials.json"}
+
+#: Corpus manifests. A CSV of DOIs, titles and publishers names the exact
+#: articles a corpus was built from. It carries none of their text, so it is
+#: not a licensing problem in the way a database is — but it identifies the
+#: papers, and a repository that is meant to ship a tool rather than a reading
+#: list should not carry one. Matched by name and, below, by shape.
+BLOCKING_NAMES |= {"licences.csv", "licenses.csv", "corpus.csv", "dois.csv"}
+
+#: A CSV whose header names a DOI column is a corpus manifest whatever it is
+#: called. Read only the first line — enough to classify, and it avoids
+#: pulling a large file into memory to answer a small question.
+def _is_doi_manifest(path: Path) -> bool:
+    if path.suffix.lower() != ".csv":
+        return False
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            header = handle.readline().lower()
+    except OSError:
+        return False
+    fields = {field.strip().strip('"') for field in header.split(",")}
+    return "doi" in fields
 
 #: Bundled third-party datasets. Not a leak of anyone's papers, but somebody
 #: else's data being redistributed, which needs a licence decision rather than
@@ -147,7 +168,7 @@ def check_working_tree() -> list[Finding]:
         rel = path.relative_to(REPO).as_posix()
         if rel.startswith((".git/", ".venv/")) or rel in tracked:
             continue
-        if _is_risky(rel):
+        if _is_risky(rel) or _is_doi_manifest(path):
             findings.append(Finding(
                 "on disk", rel,
                 "ignored by git, so it will not be committed — but do not "

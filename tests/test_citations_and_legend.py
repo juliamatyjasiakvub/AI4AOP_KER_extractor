@@ -79,7 +79,7 @@ class TestCitationKeys:
         assert keys["10.1/zzz"] == "Sanchez et al., 2019b"
 
     @pytest.mark.parametrize("raw,expected", [
-        ("https://doi.org/10.1016/J.NEURO.2019", "10.1016/j.neuro.2019"),
+        ("https://doi.org/10.1234/EXAMPLE-E", "10.1234/example-e"),
         ("http://dx.doi.org/10.1/X", "10.1/x"),
         ("doi: 10.1/Y", "10.1/y"),
         ("  ", ""),

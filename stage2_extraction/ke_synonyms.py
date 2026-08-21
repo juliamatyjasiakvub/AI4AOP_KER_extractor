@@ -389,10 +389,17 @@ def _merge(base: Sequence[str], extra: Sequence[str]) -> list[str]:
 # Ontology synonyms (OLS4)
 # ---------------------------------------------------------------------------
 
-#: Ontologies that carry the cell types and processes a Key Event names. The
-#: gene side is HGNC's job; this is for "oligodendrocyte precursor cell",
-#: "myelination", "cell differentiation" — terms with curated exact synonyms.
-_SYNONYM_ONTOLOGIES = ("cl", "go", "uberon")
+#: Ontologies that carry the cell types, processes and chemicals a Key Event
+#: names. The gene side is HGNC's job; this is for "oligodendrocyte precursor
+#: cell", "myelination", "cell differentiation" — terms with curated exact
+#: synonyms.
+#:
+#: ChEBI is here because a stressor is not a gene and was previously nobody's:
+#: a chemical written in capitals looks symbol-shaped, so it went to HGNC,
+#: which does not have it, and the answer was to add it to a list of words not
+#: to ask about. It is a ChEBI term. Asking the ontology that holds it costs
+#: the same request and returns synonyms instead of nothing.
+_SYNONYM_ONTOLOGIES = ("cl", "go", "uberon", "chebi")
 
 #: OLS4 has moved field names between versions and different deployments
 #: return different shapes, so every plausible key is read rather than assuming
@@ -602,8 +609,16 @@ def paper_abbreviations(text: str, max_pairs: int = 200) -> dict[str, str]:
         # phrase that spells the abbreviation is the definition.
         for start in range(len(window) - 1, -1, -1):
             phrase_words = window[start:]
-            if len(phrase_words) < n_letters:
-                continue  # too short to spell the abbreviation out of words
+            if not phrase_words:
+                continue
+            # Deliberately NOT "one word per letter". Schwartz-Hearst allows a
+            # word to contribute several characters, which is how most
+            # biochemical definitions are written: "alanine aminotransferase
+            # (ALT)" is two words for three letters, "anti-Mullerian hormone
+            # (AMH)" two for three. Requiring a word per letter rejected
+            # exactly the compact definitions that matter most, silently. The
+            # constraint that actually does the work is `_initials_match`
+            # below, plus the first-letter check that follows it.
             if _initials_match(phrase_words, abbrev):
                 long_form = " ".join(phrase_words)
 
@@ -675,6 +690,39 @@ def abbreviations_for_terms(
         if overlap >= min_overlap:
             keep[abbrev] = long_form
     return keep
+
+
+def backfill_paper_abbreviations(dois: Sequence[str]) -> int:
+    """
+    Recover abbreviation tables for papers extracted before they were kept.
+
+    The stored chunk text is the same text `paper_abbreviations` would have
+    read at extraction time, so a corpus built by an earlier version does not
+    have to be uploaded again to benefit — it only has to be read again, once,
+    from the database it is already in.
+
+    Returns the number of papers for which at least one definition was found.
+    """
+    from stage2_extraction import table1_store
+
+    filled = 0
+    for doi in {str(d).strip() for d in dois or [] if str(d or "").strip()}:
+        try:
+            chunks = table1_store.load_chunks(source_doi=doi, limit=10_000)
+        except Exception:  # noqa: BLE001 - an older schema has no chunk text
+            continue
+        if chunks is None or getattr(chunks, "empty", True):
+            continue
+        text = "\n".join(str(t) for t in chunks["text"].tolist() if t)
+        found = paper_abbreviations(text)
+        if not found:
+            continue
+        try:
+            table1_store.store_paper_abbreviations(found, source_doi=doi)
+            filled += 1
+        except Exception:  # noqa: BLE001 - best effort, never fatal
+            continue
+    return filled
 
 
 # ---------------------------------------------------------------------------
@@ -808,6 +856,7 @@ __all__ = [
     "expand_label",
     "morphological_terms",
     "paper_abbreviations",
+    "backfill_paper_abbreviations",
     "abbreviations_for_terms",
     "parse_user_terms",
     "init_cache",

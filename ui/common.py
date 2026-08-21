@@ -296,7 +296,7 @@ def curator_name() -> str:
     the same as having no attribution. That reasoning holds for a shared
     instance and not at all for this one, which one person runs on their own
     machine: the answer was the same every time, the box emptied itself on
-    every restart, and sixteen buttons stayed disabled until it was retyped.
+    every restart, and every button stayed disabled until it was retyped.
     The account name is already the answer, so it is read instead of asked.
     """
     try:

@@ -11,7 +11,7 @@ This runs only the two calls per paper that decide *which edge a paper lands
 on* — the pathway reconstruction and the study-metadata call behind
 `extract_pathway_rows`. The five per-KER evidence steps are skipped: they
 change the prose in a row, not whether the row exists, and they are most of the
-cost. Thirteen papers at k=5 is about 130 calls rather than about 500.
+cost. A corpus at k=5 costs roughly a quarter of the naive number of calls.
 
 Nothing is written to the application database. Results go to a separate file
 (`replicates.db` by default), so a measurement run cannot contaminate the
@@ -159,7 +159,7 @@ def run_replicates(args: argparse.Namespace, conn: sqlite3.Connection) -> None:
         print(f"Not a folder: {folder}")
         sys.exit(2)
     # Case-insensitively, because a corpus assembled by hand contains .PDF as
-    # often as .pdf, and silently extracting twelve of thirteen papers is the
+    # often as .pdf, and silently extracting all but one paper is the
     # kind of error that looks like a finding.
     pdfs = sorted(
         (p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"),

@@ -465,7 +465,7 @@ def annotate_many(
     Annotate a batch of (ke_name, level) pairs.
 
     Returns a dict keyed by the raw KE name. Deduplicates identical labels so a
-    KE mentioned by twelve papers costs one request, not twelve.
+    KE mentioned by many papers costs one request, not one per paper.
     """
     results: dict[str, OLS4Result] = {}
     unique: dict[str, Optional[str]] = {}
@@ -535,9 +535,43 @@ def ancestors(
         if cached is not None:
             return {m.curie for m in cached if m.curie}
 
+    return {m.curie for m in ancestor_terms(
+        curie, ontology, timeout=timeout, use_cache=use_cache, base_url=base_url
+    )}
+
+
+def ancestor_terms(
+    curie: str,
+    ontology: Optional[str] = None,
+    *,
+    timeout: int = 12,
+    use_cache: bool = True,
+    base_url: str = OLS4_BASE_URL,
+) -> list[OntologyMatch]:
+    """
+    As `ancestors`, but keeping each ancestor's label as well as its CURIE.
+
+    The labels are what let a caller express a policy in words — "anything
+    under 'glial cell' is one lineage" — instead of writing ontology
+    identifiers into the source, where they are unreadable and cannot be
+    checked without looking them up anyway. Same request, same cache entry;
+    `ancestors` is now the CURIE-only view of this.
+    """
+    curie = (curie or "").strip().upper()
+    if not curie:
+        return []
+
+    ontology = (ontology or curie.split(":", 1)[0]).lower()
+    cache_key = f"ancestors::{ontology}::{curie}"
+
+    if use_cache:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return list(cached)
+
     iri = _iri_for(curie, ontology)
     if not iri:
-        return set()
+        return []
 
     import urllib.parse
 
@@ -552,7 +586,7 @@ def ancestors(
         response.raise_for_status()
         payload = response.json()
     except (requests.RequestException, ValueError):
-        return set()
+        return []
 
     terms = (payload.get("_embedded") or {}).get("terms") or []
     out: list[OntologyMatch] = []
@@ -574,7 +608,7 @@ def ancestors(
     if use_cache:
         _cache_put(cache_key, curie, (ontology,), out)
 
-    return {m.curie for m in out}
+    return out
 
 
 def ancestor_lookup(
@@ -642,6 +676,7 @@ __all__ = [
     "annotate_ke",
     "annotate_many",
     "ancestors",
+    "ancestor_terms",
     "ancestor_lookup",
     "parents_for_mapping",
     "check_availability",

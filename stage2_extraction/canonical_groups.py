@@ -944,7 +944,7 @@ def split_by_cell_lineage(
                 if record[f"{side}_ke_canonical_id"] != canonical_id:
                     continue
                 name = cell_lineage.lineage(record[f"{side}_cell_type"])
-                if name != cell_lineage.UNSPECIFIED:
+                if name not in (cell_lineage.UNSPECIFIED, cell_lineage.UNRESOLVED):
                     plan.append((int(record["record_id"]), side, name))
 
         lineages = sorted({name for _, _, name in plan})

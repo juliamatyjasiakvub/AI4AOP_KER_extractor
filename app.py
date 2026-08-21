@@ -17,6 +17,7 @@ from stage1_search.export import build_export_dataframe, dataframe_to_csv_bytes
 
 from stage2_extraction import (
     aopwiki_xml,
+    cell_lineage,
     gene_registry,
     ke_normalizer,
     ke_synonyms,
@@ -1464,8 +1465,8 @@ with tab2:
             gate_log: list[dict[str, Any]] = []
             # One row per uploaded file, whatever happens to it. Without this a
             # paper that failed to read, was judged irrelevant or crashed simply
-            # vanished from the summary, and sixteen papers in could look
-            # identical to one paper in.
+            # vanished from the summary, and a long run could look
+            # identical to a short one.
             paper_log: list[dict[str, Any]] = []
 
             def _log_paper(
@@ -1504,6 +1505,11 @@ with tab2:
                     n_truncated=n_truncated,
                 )
 
+            # Cell-type resolution follows the run's ontology setting: a run
+            # with OLS4 switched off falls back to pattern matching rather
+            # than reaching for a service the user has declined.
+            cell_lineage.set_ontology_enabled(bool(ols4_enabled))
+
             active_run_id = table1_store.start_run(manifest)
             telemetry = run_manifest.start_run(RunTelemetry())
             st.session_state["_last_run_id"] = active_run_id
@@ -1513,7 +1519,7 @@ with tab2:
             # Done here rather than per paper because it is the same question
             # every time and each source is cached: the model expansion, the
             # HGNC family resolution and the ontology synonyms are paid for
-            # once and reused across all sixteen papers.
+            # once and reused across every paper in the run.
             up_vocab = down_vocab = None
             if targeted:
                 with st.spinner(
@@ -1720,6 +1726,22 @@ with tab2:
                     # Storing evidence is useful, not essential; a failure here
                     # must not cost the extraction that has already been paid for.
                     st.caption(f"Could not store paper text: {exc}")
+
+                # Keep what this paper called things. Normalisation runs over
+                # the whole corpus much later, when the PDF is long gone, and
+                # without this it has to fall back on a table somebody wrote by
+                # hand for whichever field they happened to be working in.
+                try:
+                    n_abbrev = table1_store.store_paper_abbreviations(
+                        ke_synonyms.paper_abbreviations(document.full_text),
+                        source_doi=paper_doi,
+                        source_filename=document.filename,
+                        run_id=active_run_id,
+                    )
+                    if n_abbrev:
+                        run_manifest.record("paper_abbreviations", n=n_abbrev)
+                except Exception as exc:  # noqa: BLE001
+                    st.caption(f"Could not read this paper's abbreviations: {exc}")
 
                 # --- Run the extraction pipeline ----------------------------
                 debug_container = st.expander(
@@ -2202,7 +2224,7 @@ with tab2:
 
         # Papers that gave nothing, and why. Previously this existed only as a
         # table drawn during the run, which Streamlit discards on the next
-        # click — so the two papers out of thirteen that produced no rows were
+        # click — so the papers that produced no rows were
         # unaccounted for the moment the run finished.
         _outcomes = table1_store.load_paper_outcomes(
             st.session_state.get("_last_run_id")

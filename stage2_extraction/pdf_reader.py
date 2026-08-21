@@ -494,7 +494,7 @@ def locate_quote(
     # arrives as "cellsinotherbrainregionsat". A model reading that writes the
     # quote back with the spaces restored, which is the right thing to do and
     # makes the quote unfindable by substring search. Every quotation in a
-    # thirteen-paper run came back unverified for exactly this reason, which
+    # trial run came back unverified for exactly this reason, which
     # reads as fabrication when it is a text-layer artefact.
     #
     # Comparing with all spaces removed settles it. At fifteen characters or

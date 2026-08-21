@@ -19,7 +19,7 @@ python tools/stability_check.py --db aop_rag.db --permutations 30 \
 
 No model calls, no cost. Exit code 0 when every stage was order-independent.
 
-**Result on the 13-paper corpus (63 rows, 58 edges):**
+**Example result on a test corpus:**
 
 | stage | verdict |
 |---|---|
@@ -65,7 +65,7 @@ python tools/replicate_run.py \
 python tools/replicate_run.py --report-only --out replicates.db
 ```
 
-13 papers × 2 calls × 5 replicates ≈ 130 calls. Resumable — a paper already
+N papers × 2 calls × 5 replicates. Resumable — a paper already
 recorded for a replicate is skipped, so an interrupted run continues where it
 stopped.
 

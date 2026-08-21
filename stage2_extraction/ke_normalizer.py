@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 Canonical Key Event normalization.
 
-Twelve papers describing the same biology will produce twelve different strings:
+Papers describing the same biology each produce a different string:
 "mitochondrial ROS accumulation", "increased mitochondrial reactive oxygen
 species", "elevated mtROS", "mitochondrial oxidative stress". Left alone these
 become four separate nodes and the AOP map fragments into unreadable confetti.
@@ -40,8 +40,16 @@ from schemas import CanonicalKE, OntologyMatch, level_index
 # Lexical normalization
 # ---------------------------------------------------------------------------
 
-#: Domain abbreviations expanded before comparison so "ROS" and "reactive
-#: oxygen species" land in the same bucket.
+#: Last-resort expansions, used only where the paper itself defined nothing.
+#:
+#: This table used to be the only source of expansions, which meant it had to
+#: be extended by hand for every new field the tool was pointed at — and a
+#: field nobody had extended it for silently lost merges. `paper_abbreviations`
+#: reads each paper's own definitions instead, so what remains here is limited
+#: to expansions that hold across toxicology generally and are often used
+#: without being defined. Resist adding to it: an abbreviation missing from a
+#: corpus is a signal that the corpus was never read for its definitions, and
+#: the fix belongs there.
 _ABBREVIATIONS: dict[str, str] = {
     r"\bros\b": "reactive oxygen species",
     r"\brns\b": "reactive nitrogen species",
@@ -69,31 +77,6 @@ _ABBREVIATIONS: dict[str, str] = {
     r"\bhpt\b": "hypothalamic pituitary thyroid",
     r"\bt3\b": "triiodothyronine",
     r"\bt4\b": "thyroxine",
-
-    # Neurotoxicology. The table above was built around oxidative stress and
-    # general tox; a neuro corpus abbreviates a different vocabulary, and an
-    # unexpanded "OL" scored 0.40 against "oligodendrocytes".
-    r"\bols?\b": "oligodendrocyte",
-    r"\boligodendrocytes\b": "oligodendrocyte",
-    r"\bopcs?\b": "oligodendrocyte progenitor cell",
-    r"\bmbp\b": "myelin basic protein",
-    r"\bplp\b": "proteolipid protein",
-    r"\bmag\b": "myelin associated glycoprotein",
-    r"\bmog\b": "myelin oligodendrocyte glycoprotein",
-    r"\bcns\b": "central nervous system",
-    r"\bpns\b": "peripheral nervous system",
-    r"\bbdnf\b": "brain derived neurotrophic factor",
-    r"\bnmda\b": "n methyl d aspartate",
-    r"\bampa\b": "alpha amino 3 hydroxy 5 methyl 4 isoxazolepropionic acid",
-    r"\bgaba\b": "gamma aminobutyric acid",
-    r"\bach\b": "acetylcholine",
-    r"\bache\b": "acetylcholinesterase",
-    r"\bvgcc\b": "voltage gated calcium channel",
-    r"\bvgsc\b": "voltage gated sodium channel",
-    r"\bnav\s*1\.?(\d+)\b": r"voltage gated sodium channel 1\1",
-    r"\bcav\s*1\.?(\d+)\b": r"voltage gated calcium channel 1\1",
-    r"\bstxs?\b": "saxitoxin",
-    r"\bttx\b": "tetrodotoxin",
 }
 
 #: Word-level synonyms folded to one representative.
@@ -239,8 +222,41 @@ def _flatten_hyphens(text: str) -> str:
     return text.replace("-", " ")
 
 
-def normalise_label(label: str) -> str:
-    """Reduce a raw KE label to a comparable canonical string."""
+def _expand_abbreviations(text: str, table: dict[str, str]) -> str:
+    """
+    Replace each abbreviation in `table` with its long form.
+
+    Longest abbreviation first, so that expanding "OPC" cannot leave a stray
+    "OL" behind inside a term the paper spelled out differently. Matching is
+    word-boundary anchored and case-insensitive, because a paper that defines
+    "(HSC)" writes it as HSC, HSCs and occasionally hsc.
+    """
+    for abbrev in sorted(table, key=len, reverse=True):
+        long_form = (table.get(abbrev) or "").strip().lower()
+        if not long_form or not abbrev.strip():
+            continue
+        text = re.sub(
+            rf"\b{re.escape(abbrev.strip().lower())}s?\b",
+            long_form,
+            text,
+            flags=re.I,
+        )
+    return text
+
+
+def normalise_label(label: str, *, abbreviations: Optional[dict[str, str]] = None) -> str:
+    """
+    Reduce a raw KE label to a comparable canonical string.
+
+    `abbreviations` are the expansions the source papers defined for
+    themselves, from `ke_synonyms.paper_abbreviations`. They are applied before
+    the built-in fallback table so that a paper's own definition wins: "AR" is
+    androgen receptor in an endocrine paper and aldose reductase in a metabolic
+    one, and only the paper that wrote it can settle which.
+
+    Omitting the argument keeps the previous behaviour exactly — the fallback
+    table alone — so existing callers are unaffected.
+    """
     text = (label or "").lower().strip()
     if not text:
         return ""
@@ -255,6 +271,9 @@ def normalise_label(label: str) -> str:
     text = re.sub(r"\bimpairment\s+of\s+", "impaired ", text)
     text = re.sub(r"\bloss\s+of\s+", "decreased ", text)
     text = re.sub(r"\bdisruption\s+of\s+", "impaired ", text)
+
+    if abbreviations:
+        text = _expand_abbreviations(text, abbreviations)
 
     for pattern, replacement in _ABBREVIATIONS.items():
         text = re.sub(pattern, replacement, text, flags=re.I)
@@ -402,14 +421,37 @@ class NormalizationReport:
     #: attached to it and that is a decision with a person's name on it.
     cell_type_conflicts: list[dict] = field(default_factory=list)
 
+    #: Abbreviations the corpus defines two ways — "AR" as androgen receptor in
+    #: one paper and aldose reductase in another. Left unexpanded rather than
+    #: guessed, and reported here so a curator can see that two nodes which
+    #: look like a naming inconsistency are in fact two different things.
+    abbreviation_conflicts: list[dict] = field(default_factory=list)
+
+    #: Cell types recorded on rows that no lineage could be found for. Not a
+    #: conflict and not silence — a gap in coverage. A corpus where this is
+    #: large is having its Key Events merged with no cell-type check at all,
+    #: which is precisely how a non-neurological corpus used to behave without
+    #: saying anything: every string resolved to "unspecified", every
+    #: unspecified was discarded as "the paper did not localise this", and the
+    #: findings pooled. Shown so that a run in an unfamiliar field announces
+    #: what it could not read.
+    unresolved_cell_types: list[str] = field(default_factory=list)
+
+    #: How many expansions were read out of the papers themselves, as opposed
+    #: to coming from the built-in fallback. A corpus reporting zero has not
+    #: been through `store_paper_abbreviations` — its labels are being merged
+    #: on the fallback table alone, which is the pre-existing behaviour and
+    #: worth knowing about rather than assuming.
+    n_paper_abbreviations: int = 0
+
     #: One entry per raw label: which canonical event it went to, whether it
     #: is the name of that event or one of its synonyms, and the rule and
     #: evidence that put it there. This is the account of the step between
     #: Table 1 and the canonical Key Events. Before it existed the only thing
     #: shown was the pair of totals, and a curator reading "31 raw labels → 18
-    #: canonical Key Events" had no way to find out which thirteen labels
-    #: moved, where they went, or why — which made the number read as a loss
-    #: of thirteen findings rather than as thirteen wordings for events
+    #: canonical Key Events" had no way to find out which labels moved,
+    #: where they went, or why — which made the number read as a loss of
+    #: findings rather than as alternative wordings for events
     #: already on the list.
     #:
     #: Keys: raw_label, canonical_name, level, mentions, is_event_name,
@@ -436,14 +478,64 @@ def collect_raw_kes(table1_df: pd.DataFrame) -> list[tuple[str, str, Optional[in
     one paper is very often upstream in another.
     """
     return [(label, level, wiki_id)
-            for label, level, wiki_id, _ in collect_raw_kes_with_context(table1_df)]
+            for label, level, wiki_id, _, _ in collect_raw_kes_with_context(table1_df)]
+
+
+def agreed_abbreviations(
+    by_doi: dict[str, dict[str, str]],
+) -> tuple[dict[str, str], list[dict]]:
+    """
+    Fold every paper's abbreviations into one corpus-wide table.
+
+    Returns (agreed, conflicts). An abbreviation two papers define differently
+    is left out of `agreed` and reported instead, because guessing between them
+    is how evidence about one thing is filed under another — the same failure
+    `find_cell_type_conflicts` exists to prevent, in the same shape.
+
+    Why a corpus-wide table rather than a per-paper one at the point of use:
+    clustering keys on the label string, so the same string written by two
+    papers is already one bucket. Expanding it two ways would split a node on
+    provenance rather than on biology, which is a larger change to what a
+    canonical Key Event means than this is. Agreement is the common case;
+    disagreement is rare, and rare and surfaced beats frequent and silent.
+    """
+    definitions: dict[str, Counter] = defaultdict(Counter)
+    papers: dict[str, set] = defaultdict(set)
+    for doi, table in (by_doi or {}).items():
+        for abbrev, long_form in (table or {}).items():
+            key = str(abbrev or "").strip()
+            value = str(long_form or "").strip().lower()
+            if not key or not value:
+                continue
+            definitions[key][value] += 1
+            papers[key].add(doi)
+
+    agreed: dict[str, str] = {}
+    conflicts: list[dict] = []
+    for abbrev, forms in definitions.items():
+        if len(forms) == 1:
+            agreed[abbrev] = next(iter(forms))
+            continue
+        conflicts.append(
+            {
+                "abbrev": abbrev,
+                "long_forms": [form for form, _ in forms.most_common()],
+                "n_papers": len(papers[abbrev]),
+            }
+        )
+    return agreed, sorted(conflicts, key=lambda c: -c["n_papers"])
 
 
 def collect_raw_kes_with_context(
     table1_df: pd.DataFrame,
-) -> list[tuple[str, str, Optional[int], Optional[str]]]:
+) -> list[tuple[str, str, Optional[int], Optional[str], Optional[str]]]:
     """
-    As `collect_raw_kes`, but carrying the cell type each label was seen in.
+    As `collect_raw_kes`, but carrying the cell type and the source DOI.
+
+    The DOI travels for the same reason the cell type does: what a label means
+    is a fact about the paper that wrote it. The cell type decides whether two
+    identical strings are one event; the DOI decides which abbreviation table
+    expands them.
 
     Two papers can write the identical string for events that are not the same
     event: "voltage-gated sodium channel" in an oligodendrocyte and in an
@@ -452,11 +544,13 @@ def collect_raw_kes_with_context(
     they are the same string — so the cell type has to travel alongside the
     label and become part of its identity.
     """
-    out: list[tuple[str, str, Optional[int], Optional[str]]] = []
+    out: list[tuple[str, str, Optional[int], Optional[str], Optional[str]]] = []
     if table1_df is None or table1_df.empty:
         return out
 
     for _, row in table1_df.iterrows():
+        doi = row.get("source_doi")
+        doi = str(doi).strip() if pd.notna(doi) and str(doi).strip() else None
         for name_col, level_col, id_col, cell_col in (
             ("upstream_ke_name", "upstream_ke_level", "upstream_ke_id",
              "upstream_cell_type"),
@@ -472,7 +566,7 @@ def collect_raw_kes_with_context(
             wiki_id = int(wiki_id) if pd.notna(wiki_id) and str(wiki_id).strip() not in ("", "None") else None
             cell = row.get(cell_col)
             cell = str(cell).strip() if pd.notna(cell) and str(cell).strip() else None
-            out.append((str(name).strip(), level, wiki_id, cell))
+            out.append((str(name).strip(), level, wiki_id, cell, doi))
     return out
 
 
@@ -482,6 +576,7 @@ def build_canonical_kes(
     *,
     fuzzy_threshold: float = 0.86,
     respect_polarity: bool = True,
+    abbreviations: Optional[dict[str, str]] = None,
 ) -> tuple[list[CanonicalKE], dict[str, int], NormalizationReport]:
     """
     Merge raw KE labels into canonical Key Events.
@@ -496,6 +591,9 @@ def build_canonical_kes(
         Minimum similarity for rule 4. Raise it to merge less aggressively.
     respect_polarity
         Keep True unless you have a reason not to; see the module docstring.
+    abbreviations
+        Expansions the source papers defined for themselves, from
+        `agreed_abbreviations`. Omit for the built-in fallback table alone.
 
     Returns
     -------
@@ -511,7 +609,7 @@ def build_canonical_kes(
     label_to_bucket: dict[str, str] = {}
 
     for label, level, wiki_id in raw_kes:
-        norm = normalise_label(label)
+        norm = normalise_label(label, abbreviations=abbreviations)
         if not norm:
             norm = label.strip().lower()
         cluster = buckets.get(norm)
@@ -758,7 +856,7 @@ def build_canonical_kes(
     }
 
     # How many Table 1 mentions each wording accounts for. Needed so the
-    # crosswalk can say that a label folded away carried eleven claims with it
+    # crosswalk can say how many claims a label folded away carried with it
     # rather than looking like a wording nobody used.
     mentions_by_label: Counter = Counter(label for label, _, _ in raw_kes)
 
@@ -822,8 +920,33 @@ def normalize_table1(
     # extractor, and a module-level import here would close that loop.
     from stage2_extraction import ols4_client, table1_store
 
+    # Cell-type resolution follows this call's ontology setting. Normalisation
+    # is where lineage actually decides something — whether two identically
+    # worded rows are one Key Event — so leaving it to whatever a previous
+    # rerun happened to set would make the answer depend on navigation order.
+    cell_lineage_module().set_ontology_enabled(bool(ols4_enabled))
+
     with_context = collect_raw_kes_with_context(table1_df)
-    raw_kes = [(label, level, wiki) for label, level, wiki, _ in with_context]
+    raw_kes = [(label, level, wiki) for label, level, wiki, _, _ in with_context]
+
+    # What each paper called things, read out of the papers themselves at
+    # extraction time. Absent for a corpus extracted before this existed, in
+    # which case the fallback table applies exactly as it used to.
+    dois = {row[4] for row in with_context if row[4]}
+    abbreviations: dict[str, str] = {}
+    abbreviation_conflicts: list[dict] = []
+    if dois:
+        stored = table1_store.load_paper_abbreviations()
+        # A corpus extracted before the definitions were kept has none. The
+        # text they were read from is still in `paper_chunk`, so recover them
+        # once rather than silently falling back to the built-in table.
+        if not any(doi in stored for doi in dois):
+            from stage2_extraction import ke_synonyms
+
+            if ke_synonyms.backfill_paper_abbreviations(dois):
+                stored = table1_store.load_paper_abbreviations()
+        by_doi = {doi: table for doi, table in stored.items() if doi in dois}
+        abbreviations, abbreviation_conflicts = agreed_abbreviations(by_doi)
     if not raw_kes:
         table1_store.replace_canonical_kes([], {})
         return NormalizationReport(
@@ -862,6 +985,7 @@ def normalize_table1(
         ontology_matches,
         fuzzy_threshold=float(threshold),
         respect_polarity=bool(respect_polarity),
+        abbreviations=abbreviations or None,
     )
 
     table1_store.replace_canonical_kes(canonical_kes, label_to_index)
@@ -869,6 +993,11 @@ def normalize_table1(
     report.n_ontology_lookups = n_lookups
     report.ontology_error = ontology_error
     report.cell_type_conflicts = find_cell_type_conflicts(with_context)
+    report.unresolved_cell_types = cell_lineage_module().unresolved_cell_types(
+        [row[3] for row in with_context if row[3]]
+    )
+    report.abbreviation_conflicts = abbreviation_conflicts
+    report.n_paper_abbreviations = len(abbreviations)
     return report
 
 
@@ -953,7 +1082,7 @@ def propose_specific_names(table1_df: pd.DataFrame) -> list[dict]:
             cell = row.get(f"{side}_cell_type")
             if pd.notna(cell) and str(cell).strip():
                 name_of = cell_lineage.lineage(str(cell))
-                if name_of != cell_lineage.UNSPECIFIED:
+                if name_of not in (cell_lineage.UNSPECIFIED, cell_lineage.UNRESOLVED):
                     entry["lineage"][name_of] += 1
 
     proposals: list[dict] = []
@@ -993,8 +1122,15 @@ def propose_specific_names(table1_df: pd.DataFrame) -> list[dict]:
     return sorted(proposals, key=lambda p: p["label"])
 
 
+def cell_lineage_module():
+    """`cell_lineage`, imported late to keep this module's import graph flat."""
+    from stage2_extraction import cell_lineage
+
+    return cell_lineage
+
+
 def find_cell_type_conflicts(
-    raw_kes_with_context: Sequence[tuple[str, str, Optional[int], Optional[str]]],
+    raw_kes_with_context: Sequence[tuple[str, str, Optional[int], Optional[str], Optional[str]]],
 ) -> list[dict]:
     """
     Labels written identically for events observed in different cell types.
@@ -1007,9 +1143,10 @@ def find_cell_type_conflicts(
     from stage2_extraction import cell_lineage
 
     seen: dict[str, Counter] = defaultdict(Counter)
-    for label, _level, _wiki, cell in raw_kes_with_context:
+    for row in raw_kes_with_context:
+        cell = row[3]
         if cell:
-            seen[label][cell] += 1
+            seen[row[0]][cell] += 1
 
     conflicts = []
     for label, cells in seen.items():
@@ -1276,6 +1413,7 @@ __all__ = [
     "token_key",
     "collect_raw_kes",
     "collect_raw_kes_with_context",
+    "agreed_abbreviations",
     "find_cell_type_conflicts",
     "find_context_conflicts",
     "propose_specific_names",

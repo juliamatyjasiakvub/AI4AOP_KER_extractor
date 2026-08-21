@@ -81,13 +81,13 @@ class SignIsKept(unittest.TestCase):
     """"VGSC -> loss of spiking" was recorded with the wrong sign, then lost."""
 
     def test_opposite_findings_do_not_aggregate_into_one_confident_edge(self):
-        # 28916793: raising Nav1.2 function enables spiking.
-        # 34496232: deleting SCN2A abolishes it. Same two labels, opposite sign.
+        # One paper: raising channel function enables the phenotype.
+        # Another: removing the channel abolishes it. Same labels, opposite sign.
         df = pd.DataFrame([
             _row("Voltage-gated sodium channel", "Spiking phenotype",
-                 direction="positive", doi="10.1038/s41467-017-00688-0"),
+                 direction="positive", doi="10.1234/example-a"),
             _row("Voltage-gated sodium channel", "Spiking phenotype",
-                 direction="negative", doi="10.1016/j.celrep.2021.109653"),
+                 direction="negative", doi="10.1234/example-b"),
         ])
         table2 = t2.compute_table2(df, normalized=False)
 
@@ -216,27 +216,27 @@ class ChainsAreEvidenced(unittest.TestCase):
             {"upstream_ke_name": "Voltage-gated sodium channel",
              "downstream_ke_name": "Action potential firing in pre-OLs",
              "upstream_ke_level": "Molecular", "downstream_ke_level": "Cellular",
-             "all_source_dois": "10.1038/s41467-017-00688-0",
+             "all_source_dois": "10.1234/example-a",
              "n_papers_supporting": 1, "n_papers_contradicting": 0},
             {"upstream_ke_name": "Action potential firing in pre-OLs",
              "downstream_ke_name": "Oligodendrocyte differentiation",
              "upstream_ke_level": "Cellular", "downstream_ke_level": "Cellular",
-             "all_source_dois": "10.1038/s41467-017-00688-0",
+             "all_source_dois": "10.1234/example-a",
              "n_papers_supporting": 1, "n_papers_contradicting": 0},
             {"upstream_ke_name": "Voltage-gated sodium channel",
              "downstream_ke_name": "microglial activation",
              "upstream_ke_level": "Molecular", "downstream_ke_level": "Cellular",
-             "all_source_dois": "10.1002/(issn)1098-1136",
+             "all_source_dois": "10.1234/example-c",
              "n_papers_supporting": 1, "n_papers_contradicting": 0},
             {"upstream_ke_name": "microglial activation",
              "downstream_ke_name": "proNGF production",
              "upstream_ke_level": "Cellular", "downstream_ke_level": "Molecular",
-             "all_source_dois": "10.1002/(issn)1098-1136",
+             "all_source_dois": "10.1234/example-c",
              "n_papers_supporting": 1, "n_papers_contradicting": 0},
             {"upstream_ke_name": "proNGF production",
              "downstream_ke_name": "Oligodendrocyte differentiation",
              "upstream_ke_level": "Molecular", "downstream_ke_level": "Cellular",
-             "all_source_dois": "10.1002/(issn)1098-1136",
+             "all_source_dois": "10.1234/example-c",
              "n_papers_supporting": 1, "n_papers_contradicting": 0},
         ])
         self.graph = viz.build_pathway_graph(table2)

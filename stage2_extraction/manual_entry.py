@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 Claims a curator enters by hand.
 
-Extraction misses things. A model reads sixteen papers and returns what it
+Extraction misses things. A model reads a corpus and returns what it
 found; the relationship the developer knows is in paper four, stated in a
 figure legend, is simply absent — and until now the only recourse was to
 re-run and hope, or to accept an AOP with a hole in it.

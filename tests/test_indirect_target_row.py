@@ -10,7 +10,7 @@ demonstrated exactly that relationship.
 
 Whether the target edge existed therefore came down to whether the model also
 emitted a redundant A -> B shortcut next to the chain, which it does
-inconsistently. Measured over replicate runs of one 13-paper corpus, 5 of 13
+inconsistently. Measured over replicate runs of one corpus, a minority of
 papers changed that answer between two identical runs while their chains stayed
 the same; the supporting-paper count moved because of a stylistic choice about
 summarising, not because of evidence. Deciding support by reachability instead

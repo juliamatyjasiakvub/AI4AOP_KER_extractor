@@ -3,8 +3,8 @@ What the run did not produce, and what the numbers are actually counting.
 
 Two blind spots, both of which made a corpus look better than it was.
 
-**Papers that yielded nothing.** A run over thirteen papers that extracted
-from eleven produced a QC report about eleven papers. The other two were
+**Papers that yielded nothing.** A run over a corpus that extracted from only
+part of it produced a QC report about that part alone. The rest were
 counted in `extraction_runs.papers_attempted` and described nowhere. That
 matters because the two cases are opposite: a paper the model read and found
 no mechanism in is a *finding*, while a paper whose reply hit the token
@@ -143,7 +143,7 @@ class TestRefusals:
 
     The real case: `33069750.pdf`, a peer-reviewed Toxicon paper on saxitoxin
     neurotoxicity, was declined by the provider's safety classifier on both
-    the first attempt and the retry, while twelve other papers in the same
+    the first attempt and the retry, while the other papers in the same
     corpus went through the same model untouched. Categorising that as a parse
     failure sends the reader to look at a JSON reply that was never produced;
     categorising it as no_mechanism silently converts a gap into a finding.

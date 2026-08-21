@@ -650,7 +650,7 @@ CREATE TABLE IF NOT EXISTS ke_role (
 #: and forgotten, leaving quotations that point at a `chunk_id` no longer
 #: attached to anything. That makes the obvious next question unanswerable —
 #: "this chain stops at a marker; does the paper say what happens downstream?"
-#: — without re-uploading sixteen PDFs. Storing the text turns that into a
+#: — without re-uploading the PDFs. Storing the text turns that into a
 #: query. It is the single largest table in the database and worth it: the
 #: PDFs are the one input the tool cannot regenerate for itself.
 CREATE_PAPER_CHUNK_SQL = """
@@ -671,6 +671,32 @@ CREATE TABLE IF NOT EXISTS paper_chunk (
     selected        INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT    NOT NULL,
     UNIQUE (source_filename, chunk_id, run_id)
+)
+"""
+
+#: The abbreviations each paper defines for itself.
+#:
+#: Papers introduce their own shorthand on first use — "oligodendrocyte
+#: precursor cell (OPC)", "hepatic stellate cell (HSC)" — and which shorthand a
+#: lab picks is its convention, not something a curator can predict or a
+#: maintainer can enumerate in advance. `ke_synonyms.paper_abbreviations()`
+#: already reads those definitions out of the text; this is where the answer is
+#: kept so that normalisation, which runs over the whole corpus long after the
+#: PDFs are gone, can still expand a label the way its own paper meant it.
+#:
+#: Keyed by DOI rather than by run: the same paper means the same thing by
+#: "HSC" in every run it appears in, and re-extracting it should refresh the
+#: definitions rather than accumulate copies of them.
+CREATE_PAPER_ABBREV_SQL = """
+CREATE TABLE IF NOT EXISTS paper_abbrev (
+    abbrev_row_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_doi      TEXT    NOT NULL,
+    source_filename TEXT,
+    run_id          INTEGER,
+    abbrev          TEXT    NOT NULL,
+    long_form       TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL,
+    UNIQUE (source_doi, abbrev)
 )
 """
 
@@ -826,6 +852,7 @@ _ALL_TABLES = (
     "approval_log",
     "aop_snapshot",
     "paper_chunk",
+    "paper_abbrev",
     "record_history",
     "ke_direction",
 )
@@ -953,6 +980,7 @@ def _create_all(conn: sqlite3.Connection) -> None:
         CREATE_SYNTHESIS_HISTORY_SQL,
         CREATE_KE_ROLE_SQL,
         CREATE_PAPER_CHUNK_SQL,
+        CREATE_PAPER_ABBREV_SQL,
         CREATE_RECORD_HISTORY_SQL,
         CREATE_KE_DIRECTION_SQL,
         CREATE_AOP_SNAPSHOT_SQL,
@@ -1065,7 +1093,7 @@ def init_db(*, reset_on_version_mismatch: bool = True) -> dict[str, Any]:
             was_migrated = True
         elif stale and reset_on_version_mismatch:
             # Never drop irreplaceable rows without leaving a copy behind.
-            # Re-extracting sixteen papers costs money and an afternoon; a
+            # Re-extracting a whole corpus costs money and an afternoon; a
             # file copy costs nothing and is the difference between a bad
             # moment and a lost corpus.
             backup_path = _backup_database(previous)
@@ -1583,6 +1611,80 @@ def store_chunks(
     return len(rows)
 
 
+def store_paper_abbreviations(
+    abbreviations: dict[str, str],
+    *,
+    source_doi: Optional[str],
+    source_filename: Optional[str] = None,
+    run_id: Optional[int] = None,
+) -> int:
+    """
+    Keep the abbreviations one paper defined for itself.
+
+    Re-running the same paper replaces its definitions rather than adding to
+    them: a second extraction of the same DOI is a better reading of the same
+    document, not a second document.
+    """
+    if not abbreviations or not (source_doi or "").strip():
+        return 0
+
+    doi = str(source_doi).strip()
+    now = _now()
+    rows = [
+        {
+            "source_doi": doi,
+            "source_filename": source_filename,
+            "run_id": int(run_id) if run_id is not None else None,
+            "abbrev": strip_control_chars(str(abbrev or "").strip()),
+            "long_form": strip_control_chars(str(long_form or "").strip()),
+            "created_at": now,
+        }
+        for abbrev, long_form in abbreviations.items()
+        if str(abbrev or "").strip() and str(long_form or "").strip()
+    ]
+    if not rows:
+        return 0
+
+    with _connect() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO paper_abbrev "
+            "(source_doi, source_filename, run_id, abbrev, long_form, created_at) "
+            "VALUES (:source_doi, :source_filename, :run_id, :abbrev, :long_form, "
+            " :created_at)",
+            rows,
+        )
+        conn.commit()
+    return len(rows)
+
+
+def load_paper_abbreviations(
+    source_doi: Optional[str] = None,
+) -> dict[str, dict[str, str]]:
+    """
+    Every paper's abbreviations, as {doi: {abbrev: long form}}.
+
+    Returns the whole corpus by default, because the caller that needs this —
+    normalisation — works across all papers at once and would otherwise make
+    one query per DOI.
+    """
+    sql = "SELECT source_doi, abbrev, long_form FROM paper_abbrev"
+    params: list[Any] = []
+    if source_doi and str(source_doi).strip():
+        sql += " WHERE source_doi = ?"
+        params.append(str(source_doi).strip())
+
+    out: dict[str, dict[str, str]] = {}
+    try:
+        with _connect() as conn:
+            for doi, abbrev, long_form in conn.execute(sql, params):
+                out.setdefault(str(doi), {})[str(abbrev)] = str(long_form)
+    except sqlite3.Error:
+        # An older database has no such table. Callers treat an empty map as
+        # "no paper-derived expansions", which is the pre-existing behaviour.
+        return {}
+    return out
+
+
 def load_chunks(
     source_doi: Optional[str] = None,
     source_filename: Optional[str] = None,
@@ -1597,7 +1699,7 @@ def load_chunks(
     `contains` does a plain case-insensitive substring match. That is enough
     for the question this exists to answer — "which papers say anything about
     myelination downstream of this event" — and avoids standing up a search
-    index for a corpus of sixteen papers.
+    index for a corpus of this size.
     """
     clauses: list[str] = []
     params: list[Any] = []
@@ -2146,7 +2248,7 @@ def set_claim_canonical_ends(
     """
     Point individual Table 1 rows at the Key Events their curator chose.
 
-    The unit here is the row, not the label, and that is the point. Eleven
+    The unit here is the row, not the label, and that is the point. Many
     papers wrote "voltage-gated sodium channels"; one blocked the channel in an
     oligodendrocyte and another activated it in an axon, and those are not the
     same Key Event however identical the wording. `replace_canonical_kes`

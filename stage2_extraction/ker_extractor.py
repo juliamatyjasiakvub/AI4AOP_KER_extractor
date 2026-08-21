@@ -564,10 +564,10 @@ _PERSONA = (
     # ---------------------------------------------------------------
     # Rules 4 and 5 are the ones a real corpus broke. Rule 4 used to read
     # "use the form '<direction> <entity>' WHERE DIRECTION APPLIES", and that
-    # escape hatch was taken every time: twelve rows came back named
+    # escape hatch was taken every time: row after row came back named
     # "Voltage-gated sodium channels", a thing rather than a change, which is
     # not a Key Event and cannot be a node. Rule 5 is the other half of the
-    # same failure — those twelve rows mixed patch-clamp current density,
+    # same failure — those rows mixed patch-clamp current density,
     # Nav1.6 immunolabeling and RNA-seq transcript counts under one name, so
     # one node claimed function, protein and message at once and disagreed
     # with itself about direction.
@@ -1046,7 +1046,7 @@ _STEP_BUDGETS: dict[str, int] = {
     #: not truncated into a three-step one — which would read as the paper
     #: having less to say rather than the reply having run out.
     #:
-    #: Raised from 6000 after two papers in a thirteen-paper run came back
+    #: Raised from 6000 after some papers in a trial run came back
     #: completely empty: on a reasoning model the ceiling covers the thinking
     #: AND the answer, and the thinking now has more to do — cell type,
     #: isoform, evidence type and null findings per link. The model spent the
@@ -1388,7 +1388,7 @@ def extract_kers_from_document(
 # Open extraction asks "what relationships does this paper contain?", and the
 # model invents both event names every time. Across a corpus that produces one
 # label per paper per event, which is why consolidation is hard: the pipeline
-# spends its effort trying to recognise afterwards that twelve phrasings meant
+# spends its effort trying to recognise afterwards that many phrasings meant
 # one thing.
 #
 # When the user already knows which relationship they care about, that whole
@@ -1592,10 +1592,10 @@ def name_problems(*names: Optional[str]) -> list[str]:
     Key Event names the extractor returned that are not Key Events.
 
     The prompt now forbids bare entities, and prompts are not a guarantee: a
-    rule the model complies with on fifteen papers is a rule it can drop on
-    the sixteenth, and the failure is silent. "Voltage-gated sodium channels"
+    rule the model complies with on most papers is a rule it can drop on
+    the next one, and the failure is silent. "Voltage-gated sodium channels"
     reads like a Key Event, sits on the map like one, and is a noun phrase
-    naming a thing — so twelve rows measuring current density, protein at
+    naming a thing — so rows measuring current density, protein at
     nodes and transcript counts all landed on one node that then disagreed
     with itself about direction.
 
@@ -1649,7 +1649,7 @@ def _task_pathway(
 
     The difference matters for what comes out the other end. Asking "does this
     paper support A → B?" can only ever produce one edge, and every paper
-    produces the same one, so sixteen papers make a two-node graph. Papers do
+    produces the same one, so a whole corpus makes a two-node graph. Papers do
     not work that way: one reports that the channel carries calcium, another
     that calcium drives the transcription factor, a third that the factor is
     needed for the cell to mature. Each is a different link in the same chain,
@@ -1952,7 +1952,7 @@ def _canonical_anchor(
     # one lineage are one cell; an oligodendrocyte and a microglial cell are
     # two, and only that distinction should ever split an anchor.
     observed = cell_lineage.lineage(cell_type)
-    if observed == cell_lineage.UNSPECIFIED:
+    if observed in (cell_lineage.UNSPECIFIED, cell_lineage.UNRESOLVED):
         observed = ""
 
     for anchor in (upstream, downstream):
@@ -2275,8 +2275,8 @@ def extract_pathway_rows(
     #
     # Whether the target edge appeared at all therefore depended on whether the
     # model also emitted a redundant A -> B shortcut alongside the chain, which
-    # it does inconsistently: measured over replicate runs of one 13-paper
-    # corpus, 5 of 13 papers changed that answer between two identical runs,
+    # it does inconsistently: measured over replicate runs of one corpus, a
+    # substantial minority of papers changed that answer between two runs,
     # while the underlying chains stayed the same. The support count moved
     # because of a stylistic choice about summarising, not because of evidence.
     #

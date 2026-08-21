@@ -249,7 +249,7 @@ _SYNTHESIS_PERSONA = (
     "1. Synthesise. Say what the body of evidence collectively establishes. Do "
     "not produce a paper-by-paper list.\n"
     "2. Attribute. Cite the DOIs supporting each claim in brackets, e.g. "
-    "[10.1002/stem.1515]. Every substantive claim needs at least one.\n"
+    "[10.1234/example-d]. Every substantive claim needs at least one.\n"
     "3. Report disagreement explicitly. If papers conflict, if one found no "
     "effect, or if a study qualifies its own result, that belongs in the "
     "uncertainties section and must not be smoothed away. A confident-sounding "

@@ -16,6 +16,12 @@ to third parties, and sending licensed full text to a commercial API is
 plausibly outside them. Users deserve to be told that in the moment they are
 about to do it, not in a document they will never open.
 
+Keeping the wording in one place stops the three notices drifting from each
+other. It does not stop them drifting from the code, which is what happened:
+these strings described quotations being stored long after `store_chunks()`
+began keeping every chunk of every paper. When the pipeline changes what it
+sends or what it keeps, this module and `LEGAL.md` are part of that change.
+
 None of this is legal advice, and the notices below have not been reviewed by
 counsel. Institutions deploying this tool should have their own legal and
 research-integrity people read them.
@@ -34,9 +40,13 @@ __all__ = [
 
 #: Shown when a cloud provider is selected and PDFs have been uploaded.
 CLOUD_TRANSFER_WARNING = (
-    "**The full text of these PDFs will be sent to {provider}.** Selected "
-    "passages of each paper leave this machine and are transmitted to a "
-    "third-party API for processing.\n\n"
+    "**The full text of these PDFs will be sent to {provider}.** Unless chunk "
+    "scoring is switched on in the sidebar, the whole of each paper leaves "
+    "this machine and is transmitted to a third-party API for processing — "
+    "not an excerpt.\n\n"
+    "The paper is also **cached on the provider's side**, so that the thirty "
+    "or so calls made per paper do not each re-send it. It is stored there for "
+    "the lifetime of that cache rather than only passing through in transit.\n\n"
     "Many publisher subscription licences permit personal research use but "
     "restrict systematic downloading and disclosure of licensed content to "
     "third parties. If any of these papers is behind a paywall or covered by "
@@ -85,15 +95,24 @@ your behalf.
 
 **Where your papers go.** With **Ollama (local)** selected, paper text is
 processed on this machine and never leaves it. With **Anthropic** or **OpenAI**
-selected, the selected passages of each paper are transmitted to that provider's
-API for processing, and on the hosted deployment the uploaded file also passes
-through the hosting provider's servers. Review the provider's data-usage terms,
-and prefer the local option for subscription content.
+selected, the full text of each paper is transmitted to that provider's API for
+processing — the whole article, unless chunk scoring is switched on in the
+sidebar — and it is cached on the provider's side for the lifetime of that
+cache rather than only passing through. On the hosted deployment the uploaded
+file also passes through the hosting provider's servers. Review the provider's
+data-usage and retention terms, and prefer the local option for subscription
+content.
 
 **What is stored.** Extractions, quotations, curation decisions and run
-manifests are written to the local `aop_rag.db` file. Uploaded PDFs themselves
-are not retained after processing. Nothing is redistributed or published by the
-tool.
+manifests are written to the local `aop_rag.db` file — and so is **the text of
+each paper itself**, chunk by chunk, so that a quotation can be located and its
+page reported. The PDF file is not kept; its contents are. Treat the database
+as a copy of your corpus. Nothing is redistributed or published by the tool.
+
+**How long it is kept.** On a single-user install with `AOP_RAG_DB` set, until
+you delete it — there is no expiry. Otherwise each browser session gets its own
+database, swept twelve hours after the session ends. The file is not encrypted
+and the app has no login, so anyone who can read the file can read your corpus.
 
 **Quotations and exports.** Extracted evidence includes short verbatim
 quotations from the source papers, reproduced so that a claim can be checked
@@ -102,7 +121,10 @@ share an export is your responsibility.
 
 **Third-party data.** PubMed/E-utilities, AOP-Wiki and the EBI OLS4 service
 each carry their own terms of use and attribution requirements. Check and
-attribute them in any publication derived from this output.
+attribute them in any publication derived from this output. Note that Stage 1
+screening sends each record's title and abstract to whichever provider is
+selected for that stage, and that an NCBI API key travels in the request URL,
+where a proxy may log it.
 
 **No warranty.** {SCIENTIFIC_DISCLAIMER}
 

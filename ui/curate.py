@@ -809,9 +809,9 @@ def _claim_assignment_table(canonical: pd.DataFrame, table1: pd.DataFrame) -> No
     The previous version of this step was one row per raw *label*. That is the
     wrong unit and it was the source of the complaint that this screen made no
     sense. A label is half a claim: "Voltage-gated sodium channels" appearing on
-    twelve rows says nothing about what those twelve papers did to the channel or
+    many rows says nothing about what those papers did to the channel or
     what followed, and one paper can perturb the same channel three ways and get
-    three different downstream events. Rolling that up to "12 claims, 11 papers"
+    three different downstream events. Rolling that up to "N claims, M papers"
     is exactly the information a curator needs and does not have.
 
     So the grid is one row per claim, in the paper's own words, with the
@@ -844,8 +844,8 @@ def _claim_assignment_table(canonical: pd.DataFrame, table1: pd.DataFrame) -> No
             "map. The row stays in Table 1 with its quotations — nothing is "
             "deleted — but it stops contributing evidence.\n\n"
             "**One wording can be two Key Events, and this is where you say "
-            "so.** The unit of assignment is the row, not the wording. Eleven "
-            "claims say “voltage-gated sodium channels”; if one blocked the "
+            "so.** The unit of assignment is the row, not the wording. Several "
+            "claims may say “voltage-gated sodium channels”; if one blocked the "
             "channel in an oligodendrocyte and another activated it in an axon, "
             "send those two rows to two different events and each row keeps its "
             "own. The wording stays attached to both as a synonym, because both "
@@ -871,8 +871,8 @@ def _claim_assignment_table(canonical: pd.DataFrame, table1: pd.DataFrame) -> No
         Read from the row's own `{side}_ke_canonical_id` before the alias map,
         and that order matters. The alias map is one entry per wording, so for a
         wording that has been split by cell type it can only hold one of the
-        events and reading it first would show every one of the eleven
-        sodium-channel claims under whichever event happened to be written last
+        events and reading it first would show every one of those
+        claims under whichever event happened to be written last
         — quietly discarding the split and then, on Apply, destroying it.
         """
         canonical_id = claim.get(f"{side}_ke_canonical_id")
@@ -1344,7 +1344,7 @@ def _rename_control(canonical: pd.DataFrame) -> None:
     which is right for assignment — free text there would turn one mistyped
     character into a second Key Event nobody meant — and useless when the name
     you want is one no paper wrote. "Voltage-gated sodium channels" is what
-    eleven papers called it; "Decreased NaV1.6 activity at heminodes" is what
+    the papers called it; "Decreased NaV1.6 activity at heminodes" is what
     it is. That name has to be typed somewhere.
 
     Renaming acts on the canonical record, so every raw label assigned to it

@@ -56,6 +56,35 @@ _HEADERS = {"Accept": "application/json"}
 #: might write. `name` is the full descriptive name; the rest are symbols.
 _NAME_FIELDS = ("symbol", "alias_symbol", "prev_symbol", "name", "alias_name")
 
+#: Minimum length for a bare alphabetic alias to be trusted with a family
+#: expansion. Three letters is where ambiguity lives: ALT, AST, ALP and BUN are
+#: all real aliases of real genes and all far more likely, in a paper, to be
+#: the assay of the same name.
+_MIN_UNAMBIGUOUS_ALIAS_LEN = 4
+
+
+def _is_strong_match(query: str, matched_by: Optional[str]) -> bool:
+    """
+    Whether this match is solid enough to pull in the gene's whole family.
+
+    An approved symbol is the gene, whatever else the letters might mean. An
+    alias carrying a digit is a nomenclature string — NaV1.6, KCNQ2 — that no
+    assay shares. A long alias is unlikely to collide by accident.
+
+    What is left is the short bare alias, and it is left out on purpose. "ALT"
+    is an alias of GPT and also the commonest liver readout in toxicology; the
+    gene's own names are worth having either way, but expanding from it to
+    every aminotransferase fills a screen's vocabulary with relatives of a word
+    the paper probably did not mean. Resolving it is cheap and reversible.
+    Expanding it is neither.
+    """
+    query = (query or "").strip()
+    if matched_by == "symbol":
+        return True
+    if any(c.isdigit() for c in query):
+        return True
+    return len(query) >= _MIN_UNAMBIGUOUS_ALIAS_LEN
+
 #: A gene group large enough to be a superfamily rather than an isoform family
 #: would flood the vocabulary with unrelated symbols — "Zinc fingers" has
 #: hundreds of members and nothing useful in common for screening purposes.
@@ -160,6 +189,16 @@ class GeneVocabulary:
     family: list[str] = field(default_factory=list)
     error: Optional[str] = None
 
+    #: Which HGNC index the query matched: "symbol", "alias_symbol" or
+    #: "prev_symbol". Recorded because the three are not equally good evidence
+    #: that the paper meant this gene, and because a curator looking at a
+    #: surprising term in the vocabulary deserves to see where it came from.
+    matched_by: Optional[str] = None
+
+    #: True when the family was deliberately withheld — see `_is_strong_match`.
+    #: The gene's own names are still present; only its relatives are not.
+    family_withheld: bool = False
+
     @property
     def resolved(self) -> bool:
         return self.symbol is not None
@@ -182,15 +221,25 @@ class GeneVocabulary:
 # Which strings are worth asking HGNC about
 # ---------------------------------------------------------------------------
 
-#: Words that look symbol-shaped but are ordinary English, so querying them
-#: wastes a request and risks a spurious match against a real gene symbol.
+#: Words a paper writes in capitals that are not symbols. Ordinary English
+#: only — everything else the shape test already rejects.
+#:
+#: What used to be here as well was bench vocabulary: TTX, DMEM, FBS, PBS,
+#: ELISA, PCR. That list was assembled while reading one corpus, and it showed:
+#: it blocked the reagents of an electrophysiology lab and said nothing about
+#: ALT, AST, ALP, BUN or LDH, which a liver paper writes on every page. Those
+#: are real HGNC aliases — ALT resolves to GPT, AST to GOT1 — so the missing
+#: entries were not harmless, and the ones present were: HGNC returns nothing
+#: for TTX, and a negative is cached.
+#:
+#: A hand-written list of what a field happens to say cannot be finished. The
+#: check that replaced it is `_is_strong_match` below, which asks how the token
+#: matched rather than whether somebody remembered to list it.
 _NOT_SYMBOLS = {
     "the", "and", "for", "not", "all", "any", "may", "can", "was", "are",
     "cell", "cells", "gene", "genes", "type", "types", "data", "mice", "rat",
-    "rats", "human", "mouse", "test", "control", "wild", "protein", "channel",
-    "current", "currents", "activity", "expression", "level", "levels",
-    "myelin", "sodium", "potassium", "calcium", "cd", "ph", "dna", "rna",
-    "pcr", "elisa", "dmem", "fbs", "pbs", "ttx",
+    "rats", "human", "mouse", "test", "control", "wild", "level", "levels",
+    "dna", "rna",
 }
 
 #: A symbol looks like: letters, then optionally digits and dots, e.g. SCN8A,
@@ -298,11 +347,12 @@ def fetch_gene(
             return GeneVocabulary(**cached)
 
     doc: Optional[dict] = None
+    matched_by: Optional[str] = None
     last_error: Optional[str] = None
-    for path in (
-        f"/fetch/symbol/{_quote(query)}",
-        f"/search/alias_symbol/{_quote(query)}",
-        f"/search/prev_symbol/{_quote(query)}",
+    for index, path in (
+        ("symbol", f"/fetch/symbol/{_quote(query)}"),
+        ("alias_symbol", f"/search/alias_symbol/{_quote(query)}"),
+        ("prev_symbol", f"/search/prev_symbol/{_quote(query)}"),
     ):
         payload, error = _get(path)
         if error:
@@ -318,6 +368,7 @@ def fetch_gene(
                 full_docs = _docs(full)
                 candidate = full_docs[0] if full_docs else candidate
             doc = candidate
+            matched_by = index
             break
 
     if doc is None:
@@ -332,8 +383,9 @@ def fetch_gene(
     groups = [g for g in (doc.get("gene_group") or []) if isinstance(g, str)]
     group_ids = [g for g in (doc.get("gene_group_id") or []) if isinstance(g, int)]
 
+    strong = _is_strong_match(query, matched_by)
     family: list[str] = []
-    if include_family and group_ids:
+    if include_family and group_ids and strong:
         for group_id in group_ids[:2]:  # a gene in many groups is rarely specific
             payload, error = _get(f"/fetch/gene_group_id/{group_id}")
             if error:
@@ -356,6 +408,8 @@ def fetch_gene(
         groups=groups,
         family=_dedup(family),
         error=last_error,
+        matched_by=matched_by,
+        family_withheld=bool(include_family and group_ids and not strong),
     )
     if use_cache:
         _cache_put(cache_key, query, result.__dict__)

@@ -876,7 +876,7 @@ def key_event_index(table2_df: pd.DataFrame) -> pd.DataFrame:
     Columns: ke_name, level, n_upstream (edges where it is the downstream
     partner), n_downstream, n_total, n_papers. Sorted by connectedness, so the
     events that actually anchor the pathway appear first — an event appearing
-    in one edge is a leaf, one appearing in twelve is a hub worth opening.
+    in one edge is a leaf, one appearing in many is a hub worth opening.
     """
     if table2_df is None or table2_df.empty:
         return pd.DataFrame()

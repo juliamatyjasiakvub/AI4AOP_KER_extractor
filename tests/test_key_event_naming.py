@@ -11,11 +11,11 @@ not an event — and that single node then absorbed:
     * ten different cell types and compartments
 
 None of that is visible from the name, so the node reads as one well-evidenced
-Key Event supported by eleven papers. It is not; it is roughly six events
+Key Event supported by many papers. It is not; it is several events
 stacked on top of each other, and the confidence score rewards the stack.
 
 The prompt now forbids bare entities. Prompts are not guarantees — a rule a
-model honours on fifteen papers is one it can drop on the sixteenth, silently
+model honours on most papers is one it can drop on the next, silently
 — so `name_problems` re-checks every name the model invents and attaches a
 warning to the paper that produced it.
 

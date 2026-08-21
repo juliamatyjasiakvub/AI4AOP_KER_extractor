@@ -166,3 +166,13 @@ example_files/*.pdf
 # rather than a packaging one. The application downloads it on request instead
 # (sidebar → AOP-Wiki dump), and runs without it if it is absent.
 stage2_extraction/aopwiki_data/*.gz
+
+# Corpus manifests. A CSV of DOIs, titles and publishers identifies the exact
+# articles processed; the tool ships without one.
+licences.csv
+licenses.csv
+corpus.csv
+dois.csv
+
+# Staging area for files pending manual deletion.
+_to_delete/

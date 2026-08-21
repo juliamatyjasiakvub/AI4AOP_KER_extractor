@@ -277,8 +277,8 @@ at corpus scale in this release.
 memory and not kept, which is easy to mistake for "the paper is not kept" — it
 is. To locate a quotation and report its page, the application stores each
 paper's extracted text chunk by chunk in the `paper_chunk` table, alongside the
-verbatim quotations in `evidence_spans`. A thirteen-paper corpus leaves roughly
-750 KB of publisher text in that file. Treat the database as a copy of your
+verbatim quotations in `evidence_spans`. A modest corpus leaves hundreds of
+kilobytes of publisher text in that file. Treat the database as a copy of your
 corpus: keep it local, do not commit it, and do not attach it to a manuscript
 or share it with anyone not licensed for those articles.
 

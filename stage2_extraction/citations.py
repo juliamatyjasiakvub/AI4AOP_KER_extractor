@@ -5,7 +5,7 @@ Human-readable citation keys for the papers behind every claim.
 
 The tool identified papers by DOI everywhere it showed one — in the assignment
 grid, in the evidence panel, on the map, in exports. A DOI is the right thing
-to *store* and the wrong thing to *read*: `10.1016/j.neuro.2019.03.004` tells a
+to *store* and the wrong thing to *read*: `10.1234/example-e` tells a
 curator nothing about which paper is being cited, so checking a claim meant
 copying the string into a browser. `Nav et al., 2019a` is the form the same
 person already uses in their manuscript.

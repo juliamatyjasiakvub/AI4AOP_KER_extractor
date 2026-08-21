@@ -74,8 +74,8 @@ class QCReport:
     #:
     #: The report used to be built entirely from `table1_extractions`, which
     #: means it could only ever describe papers that yielded something. A run
-    #: over thirteen papers that extracted from eleven produced a QC report
-    #: about eleven papers, and the two that gave nothing — the two most worth
+    #: over a corpus that extracted from only part of it produced a QC report
+    #: about that part alone, and the papers that gave nothing — the ones most worth
     #: looking at — were not mentioned anywhere.
     barren: pd.DataFrame = field(default_factory=pd.DataFrame)
     n_papers_attempted: int = 0
